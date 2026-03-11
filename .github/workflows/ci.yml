@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ─── Rust workspace (dmo-core + dmo-cli) ──────────────────────────────────
+  rust:
+    name: Rust — test, fmt, clippy
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      # Exclude dmo-app/src-tauri from workspace checks — it requires Tauri
+      # system deps not available in CI without additional setup.
+      - name: Build workspace (core + cli)
+        run: cargo build --workspace --exclude dmo-app
+
+      - name: Run tests
+        run: cargo test --workspace --exclude dmo-app
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (errors only)
+        run: cargo clippy --workspace --exclude dmo-app -- -D warnings
+
+  # ─── Svelte frontend (dmo-app) ────────────────────────────────────────────
+  frontend:
+    name: Frontend — npm build
+    runs-on: macos-latest
+
+    defaults:
+      run:
+        working-directory: dmo-app
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: dmo-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
