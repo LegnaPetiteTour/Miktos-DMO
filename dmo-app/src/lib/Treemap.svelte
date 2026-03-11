@@ -1,10 +1,9 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { hierarchy } from "d3-hierarchy";
-  import { voronoiTreemap } from "d3-voronoi-treemap";
+  import { voronoiTreemap as voronoiTreemapFn } from "d3-voronoi-treemap";
   import type { TreeNode } from "./types";
 
-  // ─── Props ───
   let {
     tree,
     onHover,
@@ -15,14 +14,15 @@
     onClick: (node: TreeNode) => void;
   } = $props();
 
-  // ─── State ───
   let canvas: HTMLCanvasElement | undefined = $state(undefined);
   let container: HTMLDivElement | undefined = $state(undefined);
   let width = $state(800);
   let height = $state(600);
   let cells: RenderedCell[] = $state([]);
   let hoveredIndex: number = $state(-1);
-  let prevHoveredIndex: number = $state(-1);
+  let layoutError: string = $state("");
+  let mounted = $state(false);
+  let renderMode: string = $state("");  // "voronoi" | "fallback" | empty
 
   interface RenderedCell {
     polygon: [number, number][];
@@ -34,69 +34,59 @@
   }
 
   // ═══════════════════════════════════════════════════
-  // COLOR SYSTEM — Stretched for visual clarity
+  // COLOR SYSTEM — Score + Size hybrid
   // ═══════════════════════════════════════════════════
 
-  // The waste_score formula produces small numbers (product of four 0–1 values).
-  // Real-world scores cluster in 0.0–0.3 range. We need a perceptual curve
-  // that makes differences in this range visible.
-  function perceptualScore(raw: number): number {
-    // Power curve: sqrt stretches the low end
-    // Then scale so 0.3 raw → ~0.7 perceptual
-    return Math.pow(Math.min(raw * 2.5, 1.0), 0.55);
+  // The visual intensity combines waste_score (how likely it's waste)
+  // with a size boost (large caches are visually important even at low scores).
+  // An 8GB cache at score 0.05 should look warmer than a 2MB file at 0.05.
+  function visualIntensity(rawScore: number, sizeBytes: number): number {
+    const scorePart = Math.pow(Math.min(rawScore * 2.5, 1.0), 0.55);
+
+    // Size boost: log-scaled, kicks in above 100MB
+    const sizeMB = sizeBytes / (1024 * 1024);
+    const sizeBoost = sizeMB > 100 ? Math.min(Math.log10(sizeMB / 100) * 0.15, 0.25) : 0;
+
+    return Math.min(scorePart + sizeBoost, 1.0);
   }
 
-  function wasteColor(rawScore: number): string {
-    const s = perceptualScore(rawScore);
-
-    // 5-stop gradient:
-    // 0.00 → deep ocean blue      rgb(12, 35, 68)
-    // 0.25 → cool teal             rgb(15, 90, 100)
-    // 0.50 → warm amber            rgb(180, 130, 30)
-    // 0.75 → hot orange            rgb(220, 90, 15)
-    // 1.00 → critical red          rgb(200, 30, 30)
-
+  function wasteColor(rawScore: number, sizeBytes: number): string {
+    const s = visualIntensity(rawScore, sizeBytes);
     let r: number, g: number, b: number;
 
-    if (s < 0.25) {
-      const t = s / 0.25;
-      r = lerp(12, 15, t);
-      g = lerp(35, 90, t);
-      b = lerp(68, 100, t);
-    } else if (s < 0.50) {
-      const t = (s - 0.25) / 0.25;
-      r = lerp(15, 180, t);
-      g = lerp(90, 130, t);
-      b = lerp(100, 30, t);
-    } else if (s < 0.75) {
-      const t = (s - 0.50) / 0.25;
-      r = lerp(180, 220, t);
-      g = lerp(130, 90, t);
-      b = lerp(30, 15, t);
+    if (s < 0.20) {
+      const t = s / 0.20;
+      r = lerp(10, 14, t); g = lerp(30, 80, t); b = lerp(60, 95, t);
+    } else if (s < 0.40) {
+      const t = (s - 0.20) / 0.20;
+      r = lerp(14, 50, t); g = lerp(80, 115, t); b = lerp(95, 80, t);
+    } else if (s < 0.60) {
+      const t = (s - 0.40) / 0.20;
+      r = lerp(50, 185, t); g = lerp(115, 125, t); b = lerp(80, 25, t);
+    } else if (s < 0.80) {
+      const t = (s - 0.60) / 0.20;
+      r = lerp(185, 225, t); g = lerp(125, 80, t); b = lerp(25, 10, t);
     } else {
-      const t = (s - 0.75) / 0.25;
-      r = lerp(220, 200, t);
-      g = lerp(90, 30, t);
-      b = lerp(15, 30, t);
+      const t = (s - 0.80) / 0.20;
+      r = lerp(225, 200, t); g = lerp(80, 25, t); b = lerp(10, 25, t);
     }
-
     return `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
   }
 
-  function wasteGlow(rawScore: number): string {
-    const s = perceptualScore(rawScore);
-    if (s > 0.6) return "rgba(239, 68, 68, 0.35)";
-    if (s > 0.4) return "rgba(245, 158, 11, 0.30)";
-    if (s > 0.2) return "rgba(20, 184, 166, 0.20)";
-    return "rgba(56, 189, 248, 0.12)";
+  function wasteGlow(rawScore: number, sizeBytes: number): string {
+    const s = visualIntensity(rawScore, sizeBytes);
+    if (s > 0.6) return "rgba(239, 68, 68, 0.30)";
+    if (s > 0.4) return "rgba(245, 158, 11, 0.22)";
+    if (s > 0.2) return "rgba(20, 184, 166, 0.15)";
+    return "rgba(56, 189, 248, 0.08)";
   }
 
-  function borderAlpha(rawScore: number): string {
-    const s = perceptualScore(rawScore);
-    if (s > 0.6) return "rgba(239, 68, 68, 0.50)";
-    if (s > 0.4) return "rgba(245, 158, 11, 0.35)";
-    if (s > 0.2) return "rgba(100, 200, 200, 0.20)";
-    return "rgba(56, 189, 248, 0.10)";
+  function borderAlpha(rawScore: number, sizeBytes: number): string {
+    const s = visualIntensity(rawScore, sizeBytes);
+    if (s > 0.6) return "rgba(239, 68, 68, 0.45)";
+    if (s > 0.4) return "rgba(245, 158, 11, 0.30)";
+    if (s > 0.2) return "rgba(100, 200, 200, 0.18)";
+    return "rgba(56, 189, 248, 0.08)";
   }
 
   function lerp(a: number, b: number, t: number): number {
@@ -108,58 +98,123 @@
   // ═══════════════════════════════════════════════════
 
   function computeLayout(treeData: TreeNode, w: number, h: number): RenderedCell[] {
-    if (!treeData.children || treeData.children.length === 0) return [];
+    layoutError = "";
 
-    const root = hierarchy(treeData, (d: any) => d.children)
-      .sum((d: any) => (d.children && d.children.length > 0 ? 0 : d.size))
-      .sort((a: any, b: any) => (b.value || 0) - (a.value || 0));
+    if (!treeData) { layoutError = "No data"; return []; }
 
-    const pad = 6;
-    const clip: [number, number][] = [
-      [pad, pad],
-      [w - pad, pad],
-      [w - pad, h - pad],
-      [pad, h - pad],
-    ];
-
-    try {
-      const layout = voronoiTreemap()
-        .clip(clip)
-        .minWeightRatio(0.005)
-        .maxIterationCount(100);
-      layout(root);
-    } catch (e) {
-      console.warn("Voronoi layout error:", e);
+    const items = (treeData.children || []).filter(c => c.size > 0);
+    if (items.length === 0) {
+      layoutError = `No visible children (${treeData.children?.length ?? 0} total)`;
       return [];
     }
 
-    const result: RenderedCell[] = [];
-    const leaves = root.leaves();
+    console.log(`[DMO] Layout: ${items.length} items, ${w}x${h}`);
 
-    for (const leaf of leaves) {
-      const poly = (leaf as any).polygon;
+    // Build a FLAT 2-level hierarchy: root → items as leaves.
+    // We intentionally strip item.children so Voronoi doesn't recurse into
+    // thousands of individual files (which would make iteration never converge).
+    // Originals are kept in a map so drill-down onClick still receives the full node.
+    const originalMap = new Map(items.map(n => [n.path, n]));
+    const flatItems: any[] = items.map(c => ({
+      name: c.name, path: c.path, size: c.size,
+      waste_score: c.waste_score, category: c.category,
+      is_directory: c.is_directory, file_count: c.file_count,
+      children: undefined,
+    }));
+    const wrapper = { name: treeData.name, path: treeData.path, children: flatItems };
+
+    const root = hierarchy(wrapper, (d: any) => d.children?.length ? d.children : null)
+      .sum((d: any) => (!d.children?.length) ? Math.max(d.size || 0, 1) : 0)
+      .sort((a: any, b: any) => (b.value || 0) - (a.value || 0));
+
+    if (!root.value) { layoutError = "Zero total"; return []; }
+
+    const pad = 6;
+    const clip: [number, number][] = [
+      [pad, pad], [w - pad, pad], [w - pad, h - pad], [pad, h - pad],
+    ];
+
+    try {
+      voronoiTreemapFn()
+        .clip(clip)
+        .minWeightRatio(0.002)
+        .maxIterationCount(300)
+        .convergenceRatio(0.005)(root);
+
+      const result = extractCells(root, originalMap);
+      if (result.length > 0) {
+        const avgPts = Math.round(result.reduce((s, c) => s + c.polygon.length, 0) / result.length);
+        console.log(`[DMO] Voronoi OK: ${result.length} cells, avg ${avgPts} pts/cell`);
+        renderMode = `voronoi (${avgPts}pts)`;
+        return result;
+      }
+      console.warn("[DMO] Voronoi produced 0 cells — falling back");
+    } catch (e) {
+      console.warn("[DMO] Voronoi error, using fallback:", e);
+    }
+
+    renderMode = "fallback";
+    return fallbackGrid(items, w, h, pad);
+  }
+
+  function extractCells(root: any, originalMap?: Map<string, TreeNode>): RenderedCell[] {
+    const result: RenderedCell[] = [];
+    for (const leaf of root.leaves()) {
+      const poly = leaf.polygon;
       if (!poly || poly.length < 3) continue;
 
-      const data = leaf.data as TreeNode;
-      const points: [number, number][] = poly.map((p: number[]) => [p[0], p[1]]);
+      const flat = leaf.data as any;
+      // Restore original node so drill-down gets the full children list
+      const node: TreeNode = originalMap?.get(flat.path) ?? flat;
+      const points: [number, number][] = poly.map((p: any) => [p[0], p[1]]);
 
       let cx = 0, cy = 0;
       for (const [x, y] of points) { cx += x; cy += y; }
-      cx /= points.length;
-      cy /= points.length;
-
-      const area = polygonArea(points);
+      cx /= points.length; cy /= points.length;
 
       result.push({
         polygon: points,
-        node: data,
-        fillColor: wasteColor(data.waste_score),
-        glowColor: wasteGlow(data.waste_score),
+        node,
+        fillColor: wasteColor(node.waste_score, node.size),
+        glowColor: wasteGlow(node.waste_score, node.size),
         centroid: [cx, cy],
-        area,
+        area: polygonArea(points),
       });
     }
+    return result;
+  }
 
+  function fallbackGrid(children: TreeNode[], w: number, h: number, pad: number): RenderedCell[] {
+    const totalSize = children.reduce((s, c) => s + c.size, 0);
+    if (totalSize === 0) return [];
+
+    const result: RenderedCell[] = [];
+    const usableW = w - pad * 2;
+    const usableH = h - pad * 2;
+    const cols = Math.ceil(Math.sqrt(children.length));
+    const cellW = usableW / cols;
+    let x = pad, y = pad, rowH = 0;
+
+    for (const child of children) {
+      const frac = child.size / totalSize;
+      const h2 = Math.max(usableH * frac * cols, 20);
+
+      if (x + cellW > w - pad + 1) { x = pad; y += rowH + 2; rowH = 0; }
+
+      const x2 = x + cellW - 2, y2 = y + h2;
+      rowH = Math.max(rowH, h2);
+
+      const polygon: [number, number][] = [[x, y], [x2, y], [x2, y2], [x, y2]];
+      result.push({
+        polygon,
+        node: child,
+        fillColor: wasteColor(child.waste_score, child.size),
+        glowColor: wasteGlow(child.waste_score, child.size),
+        centroid: [(x + x2) / 2, (y + y2) / 2],
+        area: (x2 - x) * (y2 - y),
+      });
+      x += cellW;
+    }
     return result;
   }
 
@@ -177,18 +232,22 @@
     canvas.height = height * dpr;
     ctx.scale(dpr, dpr);
 
-    // Background
     ctx.fillStyle = "#080c14";
     ctx.fillRect(0, 0, width, height);
 
-    // Draw cells
+    if (cells.length === 0) {
+      ctx.fillStyle = "rgba(255,255,255,0.25)";
+      ctx.font = "13px monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(layoutError || "No data to render", width / 2, height / 2);
+      return;
+    }
+
     for (let i = 0; i < cells.length; i++) {
       const cell = cells[i];
       if (cell.polygon.length < 3) continue;
-
       const isHovered = i === hoveredIndex;
 
-      // ── Fill ──
       ctx.beginPath();
       ctx.moveTo(cell.polygon[0][0], cell.polygon[0][1]);
       for (let j = 1; j < cell.polygon.length; j++) {
@@ -196,172 +255,170 @@
       }
       ctx.closePath();
 
+      // Fill
       ctx.fillStyle = cell.fillColor;
       ctx.fill();
 
-      // ── Hover glow overlay ──
-      if (isHovered) {
-        ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
-        ctx.fill();
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.45)";
-        ctx.lineWidth = 2.0;
-        ctx.stroke();
-      } else {
-        // Normal border
-        ctx.strokeStyle = borderAlpha(cell.node.waste_score);
-        ctx.lineWidth = 0.7;
-        ctx.stroke();
-      }
-
-      // ── Subtle inner glow for high-waste zones ──
-      if (cell.node.waste_score > 0.08 && !isHovered) {
+      // Glow overlay for waste zones
+      if (!isHovered && cell.node.waste_score > 0.02) {
         ctx.fillStyle = cell.glowColor;
         ctx.fill();
       }
 
-      // ── Label ──
-      if (cell.area > 1500) {
-        const label = cell.node.name;
+      // Hover
+      if (isHovered) {
+        ctx.fillStyle = "rgba(255, 255, 255, 0.10)";
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.5)";
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+      } else {
+        ctx.strokeStyle = borderAlpha(cell.node.waste_score, cell.node.size);
+        ctx.lineWidth = 0.6;
+        ctx.stroke();
+      }
+
+      // Directory indicator: thin inner border
+      if (cell.node.is_directory && cell.node.children?.length > 0 && cell.area > 3000) {
+        ctx.strokeStyle = "rgba(56, 189, 248, 0.12)";
+        ctx.lineWidth = 0.4;
+        ctx.setLineDash([3, 3]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      // Labels
+      if (cell.area > 1200) {
         const maxDim = Math.sqrt(cell.area);
         const fontSize = Math.max(8, Math.min(14, maxDim / 7));
 
-        ctx.font = `500 ${fontSize}px "SF Mono", "Fira Code", "Cascadia Code", monospace`;
+        ctx.font = `500 ${fontSize}px "SF Mono", "Fira Code", monospace`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
 
+        let displayLabel = cell.node.name;
         const maxWidth = maxDim * 0.75;
-        let displayLabel = label;
         while (ctx.measureText(displayLabel).width > maxWidth && displayLabel.length > 4) {
           displayLabel = displayLabel.slice(0, -2) + "\u2026";
         }
 
-        // Text shadow for readability
-        ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
-        ctx.fillText(displayLabel, cell.centroid[0] + 0.8, cell.centroid[1] + 0.8);
+        // Shadow
+        ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
+        ctx.fillText(displayLabel, cell.centroid[0] + 1, cell.centroid[1] + 1);
 
         // Text
-        const textAlpha = isHovered ? 1.0 : (cell.node.waste_score > 0.15 ? 0.85 : 0.55);
-        ctx.fillStyle = `rgba(255, 255, 255, ${textAlpha})`;
+        const alpha = isHovered ? 1.0 : (visualIntensity(cell.node.waste_score, cell.node.size) > 0.3 ? 0.9 : 0.6);
+        ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
         ctx.fillText(displayLabel, cell.centroid[0], cell.centroid[1]);
 
-        // Size label below name for larger cells
-        if (cell.area > 8000) {
-          const sizeStr = formatBytesShort(cell.node.size);
-          const smallSize = Math.max(7, fontSize - 3);
-          ctx.font = `400 ${smallSize}px "SF Mono", monospace`;
-          ctx.fillStyle = `rgba(255, 255, 255, ${isHovered ? 0.7 : 0.3})`;
-          ctx.fillText(sizeStr, cell.centroid[0], cell.centroid[1] + fontSize * 0.9);
+        // Size sublabel
+        if (cell.area > 6000) {
+          const sizeStr = fmtBytes(cell.node.size);
+          const smallFont = Math.max(7, fontSize - 3);
+          ctx.font = `400 ${smallFont}px "SF Mono", monospace`;
+          ctx.fillStyle = `rgba(255, 255, 255, ${isHovered ? 0.65 : 0.28})`;
+          ctx.fillText(sizeStr, cell.centroid[0], cell.centroid[1] + fontSize);
         }
       }
     }
   }
 
-  function formatBytesShort(bytes: number): string {
-    if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)}G`;
-    if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(0)}M`;
-    if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)}K`;
-    return `${bytes}B`;
+  function fmtBytes(b: number): string {
+    if (b >= 1024 ** 3) return `${(b / 1024 ** 3).toFixed(1)}G`;
+    if (b >= 1024 ** 2) return `${(b / 1024 ** 2).toFixed(0)}M`;
+    if (b >= 1024) return `${(b / 1024).toFixed(0)}K`;
+    return `${b}B`;
   }
 
-  function polygonArea(points: [number, number][]): number {
-    let area = 0;
-    const n = points.length;
-    for (let i = 0; i < n; i++) {
+  function polygonArea(pts: [number, number][]): number {
+    let a = 0;
+    for (let i = 0, n = pts.length; i < n; i++) {
       const j = (i + 1) % n;
-      area += points[i][0] * points[j][1];
-      area -= points[j][0] * points[i][1];
+      a += pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1];
     }
-    return Math.abs(area / 2);
+    return Math.abs(a / 2);
   }
 
   // ═══════════════════════════════════════════════════
-  // HIT DETECTION
+  // HIT DETECTION & EVENTS
   // ═══════════════════════════════════════════════════
 
-  function pointInPolygon(x: number, y: number, poly: [number, number][]): boolean {
+  function pointInPoly(x: number, y: number, poly: [number, number][]): boolean {
     let inside = false;
     for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-      const xi = poly[i][0], yi = poly[i][1];
-      const xj = poly[j][0], yj = poly[j][1];
-      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) {
+      const [xi, yi] = poly[i], [xj, yj] = poly[j];
+      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi)
         inside = !inside;
-      }
     }
     return inside;
   }
 
-  function findCellAt(x: number, y: number): number {
-    for (let i = 0; i < cells.length; i++) {
-      if (pointInPolygon(x, y, cells[i].polygon)) return i;
-    }
-    return -1;
-  }
-
   function handleMouseMove(e: MouseEvent) {
-    if (!canvas) return;
+    if (!canvas || cells.length === 0) return;
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const x = e.clientX - rect.left, y = e.clientY - rect.top;
 
-    const idx = findCellAt(x, y);
-    hoveredIndex = idx;
-
-    if (idx >= 0) {
-      onHover(cells[idx].node, e.clientX, e.clientY);
-    } else {
-      onHover(null, 0, 0);
+    let idx = -1;
+    for (let i = 0; i < cells.length; i++) {
+      if (pointInPoly(x, y, cells[i].polygon)) { idx = i; break; }
     }
+
+    if (idx !== hoveredIndex) { hoveredIndex = idx; render(); }
+    onHover(idx >= 0 ? cells[idx].node : null, e.clientX, e.clientY);
   }
 
   function handleMouseLeave() {
-    hoveredIndex = -1;
+    if (hoveredIndex !== -1) { hoveredIndex = -1; render(); }
     onHover(null, 0, 0);
   }
 
   function handleClick(e: MouseEvent) {
-    if (!canvas) return;
+    if (!canvas || cells.length === 0) return;
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const x = e.clientX - rect.left, y = e.clientY - rect.top;
 
-    const idx = findCellAt(x, y);
-    if (idx >= 0) {
-      onClick(cells[idx].node);
+    for (let i = 0; i < cells.length; i++) {
+      if (pointInPoly(x, y, cells[i].polygon)) {
+        onClick(cells[i].node);
+        return;
+      }
     }
   }
 
   // ═══════════════════════════════════════════════════
-  // RESIZE
+  // LIFECYCLE
   // ═══════════════════════════════════════════════════
 
   function updateSize() {
     if (!container) return;
     const rect = container.getBoundingClientRect();
-    width = Math.floor(rect.width);
-    height = Math.floor(rect.height);
+    const nw = Math.floor(rect.width), nh = Math.floor(rect.height);
+    if (nw > 0 && nh > 0 && (nw !== width || nh !== height)) {
+      width = nw; height = nh;
+    }
   }
 
   onMount(() => {
     updateSize();
-    const observer = new ResizeObserver(() => updateSize());
-    if (container) observer.observe(container);
-    return () => observer.disconnect();
+    mounted = true;
+
+    const obs = new ResizeObserver(() => {
+      updateSize();
+      if (tree && width > 0 && height > 0) {
+        cells = computeLayout(tree, width, height);
+        tick().then(() => render());
+      }
+    });
+    if (container) obs.observe(container);
+    return () => obs.disconnect();
   });
 
-  // ─── Reactivity ───
   $effect(() => {
-    if (tree && width > 0 && height > 0) {
-      cells = computeLayout(tree, width, height);
-    }
-  });
-
-  // Re-render on cells change or hover change
-  $effect(() => {
-    // Access both to track them
-    const _cells = cells;
-    const _hover = hoveredIndex;
-    if (_cells.length > 0 && canvas) {
-      render();
+    if (!mounted) return;
+    const _t = tree; const _w = width; const _h = height;
+    if (_t && _w > 0 && _h > 0) {
+      cells = computeLayout(_t, _w, _h);
+      tick().then(() => render());
     }
   });
 </script>
@@ -375,70 +432,28 @@
     onclick={handleClick}
   ></canvas>
 
-  <!-- Legend -->
   <div class="legend">
     <div class="legend-title">Terrain Health</div>
-    <div class="legend-bar">
-      <div class="legend-gradient"></div>
-      <div class="legend-labels">
-        <span>Clean</span>
-        <span>Moderate</span>
-        <span>Critical</span>
-      </div>
+    <div class="legend-gradient"></div>
+    <div class="legend-labels">
+      <span>Clean</span>
+      <span>Moderate</span>
+      <span>Critical</span>
     </div>
-    <div class="legend-count">{cells.length} zones</div>
+    <div class="legend-count">{cells.length} zones{renderMode ? ` · ${renderMode}` : ""}</div>
   </div>
 </div>
 
 <style>
-  .treemap-wrapper {
-    width: 100%;
-    height: 100%;
-    position: relative;
-    overflow: hidden;
-  }
-  canvas {
-    display: block;
-    cursor: crosshair;
-  }
-
+  .treemap-wrapper { width: 100%; height: 100%; position: relative; overflow: hidden; }
+  canvas { display: block; cursor: crosshair; }
   .legend {
-    position: absolute;
-    top: 12px;
-    right: 12px;
-    background: rgba(8, 12, 20, 0.88);
-    border: 1px solid rgba(30, 41, 59, 0.8);
-    border-radius: 8px;
-    padding: 10px 14px;
-    backdrop-filter: blur(12px);
-    pointer-events: none;
+    position: absolute; top: 12px; right: 12px;
+    background: rgba(8, 12, 20, 0.90); border: 1px solid rgba(30, 41, 59, 0.8);
+    border-radius: 8px; padding: 10px 14px; backdrop-filter: blur(12px); pointer-events: none;
   }
-  .legend-title {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    color: var(--text-muted);
-    margin-bottom: 8px;
-    font-weight: 600;
-  }
-  .legend-gradient {
-    width: 140px;
-    height: 10px;
-    border-radius: 5px;
-    background: linear-gradient(to right, #0c2344, #0f5a64, #b48220, #dc5a0f, #c81e1e);
-  }
-  .legend-labels {
-    display: flex;
-    justify-content: space-between;
-    font-size: 9px;
-    color: var(--text-muted);
-    margin-top: 4px;
-  }
-  .legend-count {
-    font-size: 9px;
-    color: var(--text-muted);
-    margin-top: 8px;
-    text-align: center;
-    font-family: var(--font-mono);
-  }
+  .legend-title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-muted); margin-bottom: 8px; font-weight: 600; }
+  .legend-gradient { width: 140px; height: 10px; border-radius: 5px; background: linear-gradient(to right, #0a1e3c, #0e5060, #327340, #b48220, #e05a0f, #c81e1e); }
+  .legend-labels { display: flex; justify-content: space-between; font-size: 9px; color: var(--text-muted); margin-top: 4px; }
+  .legend-count { font-size: 9px; color: var(--text-muted); margin-top: 8px; text-align: center; font-family: var(--font-mono); }
 </style>
