@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount } from "svelte";
   import { hierarchy } from "d3-hierarchy";
   import { voronoiTreemap } from "d3-voronoi-treemap";
   import type { TreeNode } from "./types";
@@ -22,7 +22,8 @@
   let hoveredIndex: number = $state(-1);
   let mounted = $state(false);
   let computing = $state(false);
-  let recomputeId = 0; // cancellation token
+  let lastTree: TreeNode | null = null;
+  let recomputeTimer = 0;
 
   const MAX_ZONES = 80; // Cap for Voronoi performance
 
@@ -142,12 +143,18 @@
     const pad = 6;
     const clip: [number, number][] = [[pad, pad], [w - pad, pad], [w - pad, h - pad], [pad, h - pad]];
 
+    // Deterministic PRNG (mulberry32, seed=1) so the Voronoi layout is
+    // stable across re-renders and doesn't glitch on resize recomputes.
+    let s = 1;
+    const seededRng = () => { s |= 0; s = s + 0x6d2b79f5 | 0; let t = Math.imul(s ^ s >>> 15, 1 | s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+
     try {
-      voronoiTreemap()
+      (voronoiTreemap() as any)
         .clip(clip)
         .minWeightRatio(0.005)
-        .convergenceRatio(0.005)
-        .maxIterationCount(250)(root);
+        .convergenceRatio(0.002)
+        .maxIterationCount(600)
+        .prng(seededRng)(root);
     } catch (e) {
       console.warn("[DMO] Voronoi error:", e);
       return fallbackGrid(items, w, h, pad);
@@ -398,41 +405,51 @@
     if (nw > 0 && nh > 0 && (nw !== width || nh !== height)) { width = nw; height = nh; }
   }
 
-  async function recompute() {
+  function doRecompute() {
     if (!tree || width <= 0 || height <= 0) return;
-    const myId = ++recomputeId; // take a snapshot of the current generation
-    computing = true;
-    render(); // Show "Computing terrain..."
 
-    // Yield to browser to paint the loading message
-    await new Promise(r => setTimeout(r, 20));
+    const treeChanged = tree !== lastTree;
+    lastTree = tree;
+    if (treeChanged) {
+      cells = [];
+      computing = true;
+      render(); // Paint "Computing terrain..." immediately
+    }
 
-    // If a newer recompute was triggered while we waited, bail out
-    if (myId !== recomputeId) return;
+    try {
+      cells = computeLayout(tree, width, height);
+    } catch (e) {
+      console.error('[DMO] computeLayout threw:', e);
+      cells = [];
+    } finally {
+      computing = false;
+    }
+    render();
+  }
 
-    cells = computeLayout(tree, width, height);
-    computing = false;
-    await tick();
-    if (myId === recomputeId) render();
+  // Debounce: collapses rapid successive calls (resize observer + $effect)
+  // into a single synchronous compute, eliminating async race conditions.
+  function recompute() {
+    clearTimeout(recomputeTimer);
+    recomputeTimer = window.setTimeout(doRecompute, 0);
   }
 
   onMount(() => {
     updateSize();
     mounted = true;
-    const obs = new ResizeObserver(() => {
-      updateSize();
-      recompute();
-    });
+    // ResizeObserver only updates reactive width/height state.
+    // The $effect below reacts to those changes and calls recompute().
+    // Calling recompute() here too would create a double-trigger race.
+    const obs = new ResizeObserver(() => updateSize());
     if (container) obs.observe(container);
     return () => obs.disconnect();
   });
 
   $effect(() => {
     if (!mounted) return;
+    // Read all reactive deps so Svelte tracks them.
     const _t = tree, _w = width, _h = height;
-    if (_t && _w > 0 && _h > 0) {
-      recompute();
-    }
+    if (_t && _w > 0 && _h > 0) recompute();
   });
 </script>
 

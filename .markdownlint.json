@@ -1,15 +1,5 @@
 {
   "default": true,
   "MD013": false,
-  "MD041": {
-    "front_matter_title": ""
-  },
-  "overrides": [
-    {
-      "files": ["LICENSE"],
-      "rules": {
-        "MD041": false
-      }
-    }
-  ]
+  "MD041": false
 }

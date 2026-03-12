@@ -14,8 +14,8 @@
   let viewStack: TreeNode[] = $state([]);
   let categoriesOpen: boolean = $state(false);
 
-  const currentView = $derived(
-    viewStack.length > 0 ? viewStack[viewStack.length - 1] : (scanResult !== null ? scanResult.tree : null)
+  const currentView: TreeNode | null = $derived(
+    viewStack.length > 0 ? viewStack[viewStack.length - 1] : ((scanResult as ScanResult | null)?.tree ?? null)
   );
 
   async function init() {
