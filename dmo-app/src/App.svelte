@@ -15,6 +15,14 @@
   let categoriesOpen: boolean = $state(false);
   let pathHistory: string[] = $state([]);
   let showPathHistory: boolean = $state(false);
+  let pathInputEl: HTMLInputElement | null = $state(null);
+
+  $effect(() => {
+    const _ = scanPath; // track path changes
+    if (pathInputEl && document.activeElement !== pathInputEl) {
+      requestAnimationFrame(() => { if (pathInputEl) pathInputEl.scrollLeft = pathInputEl.scrollWidth; });
+    }
+  });
 
   const currentView: TreeNode | null = $derived(
     viewStack.length > 0 ? viewStack[viewStack.length - 1] : ((scanResult as ScanResult | null)?.tree ?? null)
@@ -105,11 +113,11 @@
   <div class="controls">
     <div class="row1">
       <div class="path-wrap">
-        <input type="text" bind:value={scanPath} placeholder="Path to scan..."
+        <input type="text" bind:value={scanPath} bind:this={pathInputEl} placeholder="Path to scan..."
           class="pinput"
           disabled={scanning}
-          onfocus={() => showPathHistory = true}
-          onblur={() => setTimeout(() => { showPathHistory = false; }, 150)} />
+          onfocus={(e) => { showPathHistory = true; (e.target as HTMLInputElement).select(); }}
+          onblur={(e) => { setTimeout(() => { showPathHistory = false; }, 150); (e.target as HTMLInputElement).scrollLeft = (e.target as HTMLInputElement).scrollWidth; }} />
         {#if showPathHistory && pathHistory.length > 0}
           <div class="path-history">
             {#each pathHistory as p}
@@ -250,9 +258,9 @@
 
   .path-wrap { flex: 1; position: relative; }
   .path-strip {
-    font-size: 10px; font-family: var(--font-mono); color: var(--accent-dim);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    padding: 3px 2px 0; letter-spacing: 0.2px; display: flex; align-items: center; gap: 5px;
+    font-size: 11px; font-family: var(--font-mono); color: var(--accent-dim);
+    word-break: break-all; white-space: normal;
+    padding: 4px 2px 0; letter-spacing: 0.2px; display: flex; align-items: flex-start; gap: 5px;
   }
   .path-strip-icon { opacity: 0.5; flex-shrink: 0; }
   .path-history {
