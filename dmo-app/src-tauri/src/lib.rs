@@ -34,7 +34,11 @@ pub mod commands {
             root: root.clone(),
             max_depth: Some(max_depth),
             follow_symlinks: false,
-            denylist: default_denylist(),
+            // Never block the root itself — user explicitly chose it
+            denylist: default_denylist()
+                .into_iter()
+                .filter(|p| p != &root)
+                .collect(),
         };
 
         let (nodes, summary) = pipeline::run(&config).map_err(|e| e.to_string())?;
