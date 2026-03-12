@@ -86,7 +86,7 @@
   async function pickFolder() {
     try {
       const selected = await openDialog({ directory: true, multiple: false, title: "Choose a folder to scan" });
-      if (selected && typeof selected === "string") { scanPath = selected; }
+      if (selected && typeof selected === "string") { scanPath = selected; await startScan(); }
     } catch {}
   }
 
@@ -110,6 +110,7 @@
       else if (p === "desktop") { scanPath = `${home}/Desktop`; maxDepth = 4; }
       else if (p === "apps") { scanPath = `/Applications`; maxDepth = 3; }
     } catch {}
+    await startScan();
   }
 </script>
 
