@@ -15,7 +15,7 @@
   let categoriesOpen: boolean = $state(false);
 
   const currentView = $derived(
-    viewStack.length > 0 ? viewStack[viewStack.length - 1] : (scanResult?.tree ?? null)
+    viewStack.length > 0 ? viewStack[viewStack.length - 1] : (scanResult !== null ? scanResult.tree : null)
   );
 
   async function init() {

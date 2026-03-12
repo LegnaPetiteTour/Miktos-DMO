@@ -3,7 +3,7 @@
 ## Supported Versions
 
 | Version | Supported |
-|---|---|
+| --- | --- |
 | 0.2.x (Phase 1) | ✅ Active development |
 | 0.1.x (Phase 0) | ✅ Security patches only |
 
@@ -14,12 +14,14 @@
 Understanding DMO's threat model helps narrow the scope of relevant vulnerabilities:
 
 **What DMO does:**
+
 - Reads **filesystem metadata only**: path, size, mtime, atime, inode type
 - Writes scan results to a **local SQLite database** (`dmo_scan.db`)
 - Runs entirely **offline** — no network calls, no telemetry, no cloud sync
 - In Phase 0–1: **read-only** — no filesystem modifications of any kind
 
 **What DMO does NOT do:**
+
 - Read file contents
 - Make network requests
 - Store credentials or personal data
@@ -59,7 +61,7 @@ A useful vulnerability report includes:
 Given DMO's read-only, offline-first nature, relevant vulnerability classes include:
 
 | Class | Example |
-|---|---|
+| --- | --- |
 | **Path traversal** | Scanner following symlinks outside the intended scan root |
 | **Classifier bypass** | Crafted filename/path that causes a protected file to be classified as waste |
 | **SQLite injection** | Malicious filename/path injected into database queries |

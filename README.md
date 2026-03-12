@@ -1,16 +1,13 @@
-<div align="center">
-
 # Miktos DMO
-### Digital Maintenance Organism
 
-**A Physarum polycephalum–inspired autonomous filesystem maintenance agent for macOS**
+## Digital Maintenance Organism
+
+A Physarum polycephalum–inspired autonomous filesystem maintenance agent for macOS
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.77+-orange.svg)](https://www.rust-lang.org/)
 [![Tauri](https://img.shields.io/badge/Tauri-2.x-24C8D8.svg)](https://v2.tauri.app/)
-[![Status: Phase 1](https://img.shields.io/badge/Status-Phase%201%20%E2%80%94%20Terrain%20Visualization-brightgreen)]()
-
-</div>
+[![Status: Phase 1](https://img.shields.io/badge/Status-Phase%201%20%E2%80%94%20Terrain%20Visualization-brightgreen)](https://github.com/LegnaPetiteTour/Miktos-DMO)
 
 ---
 
@@ -40,7 +37,7 @@ A fully functional **Tauri desktop app** that:
 ### Phase 1 Validation (real machine, `~/Library`)
 
 | Metric | Value |
-|---|---|
+| --- | --- |
 | Files scanned | 202,034 |
 | Total size | 487.47 GB |
 | Waste candidates | 88,703 |
@@ -54,7 +51,7 @@ Top-ranked waste: AR Reality Composer cache blobs (64 MB each, score 0.65), Siri
 
 ## Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │  dmo-cli  (binary)           dmo-app  (Tauri desktop)        │
 │  ─────────────────           ──────────────────────────      │
@@ -79,12 +76,12 @@ Top-ranked waste: AR Reality Composer cache blobs (64 MB each, score 0.65), Siri
 
 ### Waste Score Formula
 
-```
+```text
 waste_score(f) = size_weight(f) × age_weight(f) × type_risk(f) × (1 - recency_score(f))
 ```
 
 | Component | Formula | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `size_weight` | `log10(bytes / 1024) / 7.0`, clamped [0,1] | Files < 1 KB → 0.0 |
 | `age_weight` | `min(days_mtime / 365, 1.0)` | Unknown mtime → 0.5 (conservative) |
 | `type_risk` | Lookup from `WasteCategory` | 0.00 for protected, 0.95 for app/pkg caches |
@@ -93,7 +90,7 @@ waste_score(f) = size_weight(f) × age_weight(f) × type_risk(f) × (1 - recency
 ### Waste Categories
 
 | Category | `type_risk` | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `ApplicationCache` | 0.95 | `~/Library/Caches/` |
 | `PackageManagerCache` | 0.95 | npm, pip, cargo, homebrew |
 | `BrowserCache` | 0.90 | Chrome, Firefox, Safari, Brave |
@@ -111,7 +108,7 @@ Protected categories are never scored, never stored in the database, and are inv
 ## Roadmap
 
 | Phase | Goal | Status |
-|---|---|---|
+| --- | --- | --- |
 | **0** | CLI scanner — classify, score, SQLite, ranked report | ✅ Complete |
 | **1** | Tauri app + Voronoi treemap terrain visualization | ✅ Complete |
 | **2** | WebGL2/WebGPU Physarum particle organisms on the terrain | 🔜 Next |
@@ -164,7 +161,7 @@ cargo test
 **CLI flags:**
 
 | Flag | Default | Description |
-|---|---|---|
+| --- | --- | --- |
 | `--path / -p` | `.` | Directory to scan |
 | `--max-depth / -d` | `8` | Max recursion depth |
 | `--top / -n` | `25` | Top N waste candidates to display |
@@ -193,7 +190,7 @@ First launch compiles all Tauri + Rust dependencies (~3–4 min). Subsequent lau
 
 ## Project Structure
 
-```
+```text
 Miktos-DMO/
 ├── Cargo.toml                    # Workspace root
 ├── dmo-core/                     # Library crate — all intelligence
@@ -226,7 +223,7 @@ Miktos-DMO/
 
 DMO is built around a non-destructive safety pyramid:
 
-```
+```text
 ┌─────────────────────────────────────────────────────┐
 │  LAYER 4 — User Interface                           │
 │  All proposed actions shown before execution.       │
