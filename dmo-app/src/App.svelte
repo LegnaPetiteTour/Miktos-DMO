@@ -107,15 +107,9 @@
       <div class="path-wrap">
         <input type="text" bind:value={scanPath} placeholder="Path to scan..."
           class="pinput"
-          class:path-active={!!scanResult && !scanning}
           disabled={scanning}
           onfocus={() => showPathHistory = true}
           onblur={() => setTimeout(() => { showPathHistory = false; }, 150)} />
-        {#if scanResult && !scanning}
-          <div class="path-current" title={displayPath}>
-            {abbrevPath(displayPath)}
-          </div>
-        {/if}
         {#if showPathHistory && pathHistory.length > 0}
           <div class="path-history">
             {#each pathHistory as p}
@@ -134,6 +128,11 @@
         <button class="cbtn" class:copen={categoriesOpen} onclick={toggleCategories} title="Category breakdown">☰</button>
       {/if}
     </div>
+    {#if scanResult && !scanning}
+      <div class="path-strip" title={displayPath}>
+        <span class="path-strip-icon">⌁</span>{displayPath}
+      </div>
+    {/if}
     <div class="row2">
       <div class="presets">
         <button class="pr" onclick={() => setPreset("caches")}>~/Library/Caches</button>
@@ -248,15 +247,14 @@
   .row2 { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; min-height: 24px; }
   .pinput { flex: 1; padding: 7px 12px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-family: var(--font-mono); font-size: 12px; outline: none; }
   .pinput:focus { border-color: var(--accent-dim); }
-  .pinput.path-active { padding-bottom: 18px; } /* make room for path-current overlay */
 
   .path-wrap { flex: 1; position: relative; }
-  .path-current {
-    position: absolute; bottom: 5px; left: 13px; right: 8px;
-    font-size: 9px; font-family: var(--font-mono); color: var(--accent-dim);
+  .path-strip {
+    font-size: 10px; font-family: var(--font-mono); color: var(--accent-dim);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    pointer-events: none; letter-spacing: 0.3px;
+    padding: 3px 2px 0; letter-spacing: 0.2px; display: flex; align-items: center; gap: 5px;
   }
+  .path-strip-icon { opacity: 0.5; flex-shrink: 0; }
   .path-history {
     position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 500;
     background: rgba(8,12,20,0.98); border: 1px solid var(--border); border-radius: 6px;
