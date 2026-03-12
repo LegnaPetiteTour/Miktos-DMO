@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import Treemap from "./lib/Treemap.svelte";
   import type { ScanResult, TreeNode } from "./lib/types";
 
@@ -82,12 +83,32 @@
   function wastePercent(): string { if (!scanResult || !scanResult.summary.total_size) return "0"; return ((scanResult.summary.waste_size / scanResult.summary.total_size) * 100).toFixed(1); }
   function canDrill(n: TreeNode | null): boolean { return !!n && n.is_directory && !!n.children && n.children.length > 0; }
 
+  async function pickFolder() {
+    try {
+      const selected = await openDialog({ directory: true, multiple: false, title: "Choose a folder to scan" });
+      if (selected && typeof selected === "string") { scanPath = selected; }
+    } catch {}
+  }
+
+  async function scanHere() {
+    // Promote the current drilled node to the scan root
+    const node = viewStack[viewStack.length - 1];
+    if (!node) return;
+    scanPath = node.path;
+    viewStack = [];
+    await startScan();
+  }
+
   async function setPreset(p: string) {
     try {
       const home: string = await invoke("get_home_dir");
       if (p === "caches") { scanPath = `${home}/Library/Caches`; maxDepth = 4; }
       else if (p === "library") { scanPath = `${home}/Library`; maxDepth = 5; }
       else if (p === "home") { scanPath = home; maxDepth = 4; }
+      else if (p === "downloads") { scanPath = `${home}/Downloads`; maxDepth = 4; }
+      else if (p === "documents") { scanPath = `${home}/Documents`; maxDepth = 5; }
+      else if (p === "desktop") { scanPath = `${home}/Desktop`; maxDepth = 4; }
+      else if (p === "apps") { scanPath = `/Applications`; maxDepth = 3; }
     } catch {}
   }
 </script>
@@ -118,6 +139,7 @@
           disabled={scanning}
           onfocus={(e) => { showPathHistory = true; (e.target as HTMLInputElement).select(); }}
           onblur={(e) => { setTimeout(() => { showPathHistory = false; }, 150); (e.target as HTMLInputElement).scrollLeft = (e.target as HTMLInputElement).scrollWidth; }} />
+        <button class="pick-btn" onclick={pickFolder} disabled={scanning} title="Choose folder">⋯</button>
         {#if showPathHistory && pathHistory.length > 0}
           <div class="path-history">
             {#each pathHistory as p}
@@ -143,9 +165,13 @@
     {/if}
     <div class="row2">
       <div class="presets">
-        <button class="pr" onclick={() => setPreset("caches")}>~/Library/Caches</button>
+        <button class="pr" onclick={() => setPreset("caches")}>~/Caches</button>
+        <button class="pr" onclick={() => setPreset("downloads")}>~/Downloads</button>
+        <button class="pr" onclick={() => setPreset("documents")}>~/Documents</button>
+        <button class="pr" onclick={() => setPreset("desktop")}>~/Desktop</button>
         <button class="pr" onclick={() => setPreset("library")}>~/Library</button>
         <button class="pr" onclick={() => setPreset("home")}>Home</button>
+        <button class="pr" onclick={() => setPreset("apps")}>/Applications</button>
       </div>
       {#if viewStack.length > 0}
         <nav class="bc">
@@ -155,6 +181,7 @@
             <button class="crumb" class:cur={i === viewStack.length - 1} onclick={() => navigateToLevel(i)}>{c.name}</button>
           {/each}
           <button class="bbk" onclick={navigateBack}>← Back</button>
+          <button class="bscan" onclick={scanHere} title="Re-scan this folder as the new root">⊙ Scan here</button>
         </nav>
       {:else if scanResult}
         <nav class="bc">
@@ -253,10 +280,13 @@
   .controls { padding: 8px 20px 10px; background: var(--bg-secondary); border-bottom: 1px solid var(--border); flex-shrink: 0; }
   .row1 { display: flex; gap: 6px; }
   .row2 { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; min-height: 24px; }
-  .pinput { flex: 1; padding: 7px 12px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-family: var(--font-mono); font-size: 12px; outline: none; }
+  .pinput { flex: 1; min-width: 0; padding: 7px 12px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-family: var(--font-mono); font-size: 12px; outline: none; }
   .pinput:focus { border-color: var(--accent-dim); }
 
-  .path-wrap { flex: 1; position: relative; }
+  .path-wrap { flex: 1; position: relative; display: flex; align-items: center; gap: 4px; }
+  .pick-btn { flex-shrink: 0; padding: 7px 10px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 6px; color: var(--text-muted); font-size: 14px; line-height: 1; cursor: pointer; }
+  .pick-btn:hover:not(:disabled) { border-color: var(--accent-dim); color: var(--accent); }
+  .pick-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .path-strip {
     font-size: 11px; font-family: var(--font-mono); color: var(--accent-dim);
     word-break: break-all; white-space: normal;
@@ -297,6 +327,8 @@
   .bsep-dim { color: var(--text-muted); font-size: 10px; font-style: italic; opacity: 0.6; }
   .bbk { background: none; border: 1px solid var(--border); color: var(--text-muted); cursor: pointer; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 6px; font-family: var(--font-mono); }
   .bbk:hover { border-color: var(--accent-dim); color: var(--text-primary); }
+  .bscan { background: none; border: 1px solid var(--accent-dim); color: var(--accent-dim); cursor: pointer; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 4px; font-family: var(--font-mono); }
+  .bscan:hover { background: rgba(14,165,233,0.1); color: var(--accent); border-color: var(--accent); }
 
   .content { flex: 1; position: relative; overflow: hidden; }
 
