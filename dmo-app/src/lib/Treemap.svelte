@@ -20,12 +20,10 @@
   let height = $state(600);
   let cells: RenderedCell[] = $state([]);
   let hoveredIndex: number = $state(-1);
-  let mounted = $state(false);
-  let computing = $state(false);
-  let lastTree: TreeNode | null = null;
-  let recomputeTimer = 0;
+  let mounted = false;
+  let layoutVersion = 0; // prevent stale renders
 
-  const MAX_ZONES = 80; // Cap for Voronoi performance
+  const MAX_ZONES = 80;
 
   interface RenderedCell {
     polygon: [number, number][];
@@ -36,10 +34,6 @@
     area: number;
     drillable: boolean;
   }
-
-  // ═══════════════════════════════════════════════════
-  // COLOR
-  // ═══════════════════════════════════════════════════
 
   function visualIntensity(score: number, size: number): number {
     const scorePart = Math.pow(Math.min(score * 2.5, 1.0), 0.55);
@@ -78,60 +72,43 @@
   function lerp(a: number, b: number, t: number): number { return a + (b - a) * t; }
 
   // ═══════════════════════════════════════════════════
-  // LAYOUT — Capped at MAX_ZONES for performance
+  // LAYOUT — fully synchronous, no async, no race conditions
   // ═══════════════════════════════════════════════════
 
   function prepareChildren(treeData: TreeNode): TreeNode[] {
     let items = (treeData.children || []).filter(c => c.size > 0);
     if (items.length === 0) return [];
-
-    // Sort by size descending
     items.sort((a, b) => b.size - a.size);
 
-    // If within limit, return as-is
     if (items.length <= MAX_ZONES) return items;
 
-    // Keep top items, aggregate the rest into "Other"
     const keep = items.slice(0, MAX_ZONES - 1);
     const rest = items.slice(MAX_ZONES - 1);
-
     const otherSize = rest.reduce((s, c) => s + c.size, 0);
     const otherFiles = rest.reduce((s, c) => s + (c.file_count || 1), 0);
-    const otherScore = otherSize > 0
-      ? rest.reduce((s, c) => s + c.waste_score * c.size, 0) / otherSize
-      : 0;
+    const otherScore = otherSize > 0 ? rest.reduce((s, c) => s + c.waste_score * c.size, 0) / otherSize : 0;
 
-    const otherNode: TreeNode = {
+    return [...keep, {
       name: `Other (${rest.length} items)`,
       path: treeData.path + "/__other__",
-      size: otherSize,
-      file_count: otherFiles,
-      waste_score: otherScore,
-      category: "Mixed",
-      is_directory: false, // Not drillable
-      children: [],
-    };
-
-    return [...keep, otherNode];
+      size: otherSize, file_count: otherFiles, waste_score: otherScore,
+      category: "Mixed", is_directory: false, children: [],
+    }];
   }
 
   function computeLayout(treeData: TreeNode, w: number, h: number): RenderedCell[] {
     const items = prepareChildren(treeData);
     if (items.length === 0) return [];
 
-    // Shallow copies without children for Voronoi (treats as leaves)
+    // SQRT compression prevents extreme size ratios from breaking Voronoi
     const leaves = items.map(item => ({
-      name: item.name,
-      path: item.path,
-      size: item.size,
-      waste_score: item.waste_score,
-      file_count: item.file_count,
-      category: item.category,
-      is_directory: item.is_directory,
+      name: item.name, path: item.path,
+      size: Math.sqrt(item.size), // compressed for Voronoi only
+      waste_score: item.waste_score, file_count: item.file_count,
+      category: item.category, is_directory: item.is_directory,
     }));
 
-    const wrapper = { name: treeData.name, size: treeData.size, children: leaves };
-
+    const wrapper = { name: treeData.name, size: 0, children: leaves };
     const root = hierarchy(wrapper, (d: any) =>
         d.children && d.children.length > 0 ? d.children : null
       )
@@ -143,90 +120,30 @@
     const pad = 6;
     const clip: [number, number][] = [[pad, pad], [w - pad, pad], [w - pad, h - pad], [pad, h - pad]];
 
-    // Deterministic PRNG (mulberry32, seed=1) so the Voronoi layout is
-    // stable across re-renders and doesn't glitch on resize recomputes.
-    let s = 1;
-    const seededRng = () => { s |= 0; s = s + 0x6d2b79f5 | 0; let t = Math.imul(s ^ s >>> 15, 1 | s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
-
     try {
-      (voronoiTreemap() as any)
-        .clip(clip)
-        .minWeightRatio(0.005)
-        .convergenceRatio(0.002)
-        .maxIterationCount(600)
-        .prng(seededRng)(root);
+      voronoiTreemap().clip(clip).minWeightRatio(0.01).maxIterationCount(150)(root);
     } catch (e) {
-      console.warn("[DMO] Voronoi error:", e);
-      return fallbackGrid(items, w, h, pad);
+      console.warn("[DMO] Voronoi failed:", e);
+      return [];
     }
 
     const result: RenderedCell[] = [];
     for (const leaf of root.leaves()) {
       const poly = (leaf as any).polygon;
       if (!poly || poly.length < 3) continue;
-
       const ld = leaf.data as any;
-      // Find the original item (with children intact) for drill-down
-      const origItem = items.find(i => i.path === ld.path) || ld;
-
+      const orig = items.find(i => i.path === ld.path) || ld;
       const points: [number, number][] = poly.map((p: any) => [p[0], p[1]]);
       let cx = 0, cy = 0;
       for (const [x, y] of points) { cx += x; cy += y; }
       cx /= points.length; cy /= points.length;
-
-      const drillable = origItem.is_directory && origItem.children && origItem.children.length > 0;
-
       result.push({
-        polygon: points,
-        node: origItem as TreeNode,
-        fillColor: wasteColor(origItem.waste_score, origItem.size),
-        glowColor: glowColor(origItem.waste_score, origItem.size),
-        centroid: [cx, cy],
-        area: polyArea(points),
-        drillable,
+        polygon: points, node: orig as TreeNode,
+        fillColor: wasteColor(orig.waste_score, orig.size),
+        glowColor: glowColor(orig.waste_score, orig.size),
+        centroid: [cx, cy], area: polyArea(points),
+        drillable: orig.is_directory && orig.children && orig.children.length > 0,
       });
-    }
-
-    if (result.length === 0) {
-      console.warn("[DMO] Voronoi returned 0 valid cells — using fallback grid");
-      return fallbackGrid(items, w, h, pad);
-    }
-
-    return result;
-  }
-
-  // Proportional treemap fallback (sliced columns)
-  function fallbackGrid(items: TreeNode[], w: number, h: number, pad: number): RenderedCell[] {
-    const totalSize = items.reduce((s, c) => s + c.size, 0);
-    if (totalSize === 0) return [];
-    const usableW = w - pad * 2;
-    const usableH = h - pad * 2;
-    const cols = Math.ceil(Math.sqrt(items.length));
-    const colW = usableW / cols;
-    const result: RenderedCell[] = [];
-    let colIdx = 0, x = pad;
-    for (let ci = 0; ci < cols && colIdx < items.length; ci++, x += colW) {
-      // Items in this column
-      const slice = items.slice(ci * Math.ceil(items.length / cols),
-                                (ci + 1) * Math.ceil(items.length / cols));
-      const colTotal = slice.reduce((s, c) => s + c.size, 0);
-      let y = pad;
-      for (const item of slice) {
-        const frac = colTotal > 0 ? item.size / colTotal : 1 / slice.length;
-        const cellH = Math.max(frac * usableH, 16);
-        const x2 = x + colW - 2, y2 = y + cellH - 2;
-        const polygon: [number, number][] = [[x, y], [x2, y], [x2, y2], [x, y2]];
-        const cx = (x + x2) / 2, cy = (y + y2) / 2;
-        result.push({
-          polygon, node: item,
-          fillColor: wasteColor(item.waste_score, item.size),
-          glowColor: glowColor(item.waste_score, item.size),
-          centroid: [cx, cy],
-          area: (x2 - x) * (y2 - y),
-          drillable: item.is_directory && item.children?.length > 0,
-        });
-        y += cellH;
-      }
     }
     return result;
   }
@@ -247,14 +164,6 @@
 
     ctx.fillStyle = "#080c14";
     ctx.fillRect(0, 0, width, height);
-
-    if (computing) {
-      ctx.fillStyle = "rgba(255,255,255,0.3)";
-      ctx.font = "14px monospace";
-      ctx.textAlign = "center";
-      ctx.fillText("Computing terrain...", width / 2, height / 2);
-      return;
-    }
 
     if (cells.length === 0) {
       ctx.fillStyle = "rgba(255,255,255,0.25)";
@@ -277,10 +186,7 @@
       ctx.fillStyle = cell.fillColor;
       ctx.fill();
 
-      if (!hov && cell.node.waste_score > 0.02) {
-        ctx.fillStyle = cell.glowColor;
-        ctx.fill();
-      }
+      if (!hov && cell.node.waste_score > 0.02) { ctx.fillStyle = cell.glowColor; ctx.fill(); }
 
       if (hov) {
         ctx.fillStyle = cell.drillable ? "rgba(56,189,248,0.12)" : "rgba(255,255,255,0.10)";
@@ -294,7 +200,6 @@
         ctx.stroke();
       }
 
-      // Drillable indicator (subtle dashed border)
       if (cell.drillable && !hov && cell.area > 3000) {
         ctx.save();
         ctx.strokeStyle = "rgba(56,189,248,0.12)";
@@ -304,7 +209,6 @@
         ctx.restore();
       }
 
-      // Labels
       if (cell.area > 1200) {
         const maxDim = Math.sqrt(cell.area);
         const fs = Math.max(8, Math.min(14, maxDim / 7));
@@ -322,7 +226,6 @@
         ctx.fillStyle = `rgba(255,255,255,${alpha})`;
         ctx.fillText(lbl, cell.centroid[0], cell.centroid[1]);
 
-        // Size sublabel
         if (cell.area > 6000) {
           ctx.font = `400 ${Math.max(7, fs - 3)}px "SF Mono",monospace`;
           ctx.fillStyle = `rgba(255,255,255,${hov ? 0.65 : 0.28})`;
@@ -348,10 +251,6 @@
     return Math.abs(a / 2);
   }
 
-  // ═══════════════════════════════════════════════════
-  // EVENTS
-  // ═══════════════════════════════════════════════════
-
   function pip(x: number, y: number, poly: [number, number][]): boolean {
     let inside = false;
     for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
@@ -367,14 +266,7 @@
     const x = e.clientX - rect.left, y = e.clientY - rect.top;
     let idx = -1;
     for (let i = 0; i < cells.length; i++) { if (pip(x, y, cells[i].polygon)) { idx = i; break; } }
-
-    // Change cursor based on drillable
-    if (idx >= 0 && cells[idx].drillable) {
-      canvas.style.cursor = "pointer";
-    } else {
-      canvas.style.cursor = "crosshair";
-    }
-
+    canvas.style.cursor = (idx >= 0 && cells[idx].drillable) ? "pointer" : "crosshair";
     if (idx !== hoveredIndex) { hoveredIndex = idx; render(); }
     onHover(idx >= 0 ? cells[idx].node : null, e.clientX, e.clientY);
   }
@@ -395,7 +287,7 @@
   }
 
   // ═══════════════════════════════════════════════════
-  // LIFECYCLE
+  // LIFECYCLE — simple, synchronous, no race conditions
   // ═══════════════════════════════════════════════════
 
   function updateSize() {
@@ -405,51 +297,30 @@
     if (nw > 0 && nh > 0 && (nw !== width || nh !== height)) { width = nw; height = nh; }
   }
 
-  function doRecompute() {
-    if (!tree || width <= 0 || height <= 0) return;
-
-    const treeChanged = tree !== lastTree;
-    lastTree = tree;
-    if (treeChanged) {
-      cells = [];
-      computing = true;
-      render(); // Paint "Computing terrain..." immediately
-    }
-
-    try {
-      cells = computeLayout(tree, width, height);
-    } catch (e) {
-      console.error('[DMO] computeLayout threw:', e);
-      cells = [];
-    } finally {
-      computing = false;
-    }
-    render();
-  }
-
-  // Debounce: collapses rapid successive calls (resize observer + $effect)
-  // into a single synchronous compute, eliminating async race conditions.
-  function recompute() {
-    clearTimeout(recomputeTimer);
-    recomputeTimer = window.setTimeout(doRecompute, 0);
+  function doLayout() {
+    if (!tree || width <= 0 || height <= 0 || !canvas) return;
+    const v = ++layoutVersion;
+    cells = computeLayout(tree, width, height);
+    if (v === layoutVersion) render(); // only render if not superseded
   }
 
   onMount(() => {
     updateSize();
     mounted = true;
-    // ResizeObserver only updates reactive width/height state.
-    // The $effect below reacts to those changes and calls recompute().
-    // Calling recompute() here too would create a double-trigger race.
-    const obs = new ResizeObserver(() => updateSize());
+    doLayout();
+    const obs = new ResizeObserver(() => { updateSize(); doLayout(); });
     if (container) obs.observe(container);
     return () => obs.disconnect();
   });
 
+  // React to tree or size changes — simple synchronous call
   $effect(() => {
     if (!mounted) return;
-    // Read all reactive deps so Svelte tracks them.
     const _t = tree, _w = width, _h = height;
-    if (_t && _w > 0 && _h > 0) recompute();
+    if (_t && _w > 0 && _h > 0) {
+      // Use requestAnimationFrame to batch with next paint, no async
+      requestAnimationFrame(doLayout);
+    }
   });
 </script>
 
