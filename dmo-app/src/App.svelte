@@ -13,16 +13,26 @@
   let tooltipY: number = $state(0);
   let viewStack: TreeNode[] = $state([]);
   let categoriesOpen: boolean = $state(false);
+  let pathHistory: string[] = $state([]);
+  let showPathHistory: boolean = $state(false);
 
   const currentView: TreeNode | null = $derived(
     viewStack.length > 0 ? viewStack[viewStack.length - 1] : ((scanResult as ScanResult | null)?.tree ?? null)
   );
 
+  // The filesystem path currently shown in the map (root path + drill path)
+  const currentPath: string = $derived(
+    viewStack.length > 0 ? viewStack[viewStack.length - 1].path : ((scanResult as ScanResult | null)?.tree.path ?? scanPath)
+  );
+
+  // Path shown in the address bar — hover preview takes priority
+  const displayPath: string = $derived(
+    (hoveredNode as unknown as TreeNode | null)?.path ?? currentPath
+  );
+
   async function init() {
-    try {
-      const home: string = await invoke("get_home_dir");
-      scanPath = `${home}/Library/Caches`;
-    } catch { scanPath = "/tmp"; }
+    try { const home: string = await invoke("get_home_dir"); scanPath = `${home}/Library/Caches`; }
+    catch { scanPath = "/tmp"; }
   }
   init();
 
@@ -31,38 +41,24 @@
     scanning = true; error = null; scanResult = null; viewStack = []; categoriesOpen = false;
     try {
       scanResult = await invoke("scan_filesystem", { path: scanPath, maxDepth: maxDepth });
-    } catch (e: any) {
-      error = typeof e === "string" ? e : e.message || "Scan failed";
-    } finally { scanning = false; }
+      // Save to path history (deduplicated, most recent first, max 10)
+      pathHistory = [scanPath, ...pathHistory.filter(p => p !== scanPath)].slice(0, 10);
+    }
+    catch (e: any) { error = typeof e === "string" ? e : e.message || "Scan failed"; }
+    finally { scanning = false; }
   }
 
   function handleCellClick(node: TreeNode) {
-    if (node.is_directory && node.children && node.children.length > 0) {
-      viewStack = [...viewStack, node];
-      hoveredNode = null;
-    }
+    if (node.is_directory && node.children && node.children.length > 0) { viewStack = [...viewStack, node]; hoveredNode = null; }
   }
-
-  function navigateBack() {
-    if (viewStack.length > 0) { viewStack = viewStack.slice(0, -1); hoveredNode = null; }
-  }
-
-  function navigateToLevel(index: number) {
-    viewStack = index < 0 ? [] : viewStack.slice(0, index + 1);
-    hoveredNode = null;
-  }
-
-  function handleHover(node: TreeNode | null, x: number, y: number) {
-    hoveredNode = node; tooltipX = x; tooltipY = y;
-  }
-
+  function navigateBack() { if (viewStack.length > 0) { viewStack = viewStack.slice(0, -1); hoveredNode = null; } }
+  function navigateToLevel(index: number) { viewStack = index < 0 ? [] : viewStack.slice(0, index + 1); hoveredNode = null; }
+  function handleHover(node: TreeNode | null, x: number, y: number) { hoveredNode = node; tooltipX = x; tooltipY = y; }
   function toggleCategories() { categoriesOpen = !categoriesOpen; }
 
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === "Enter" && !scanning && document.activeElement?.tagName !== "SELECT") startScan();
-    if ((e.key === "Escape" || e.key === "Backspace") && viewStack.length > 0 && document.activeElement?.tagName !== "INPUT") {
-      e.preventDefault(); navigateBack();
-    }
+    if ((e.key === "Escape" || e.key === "Backspace") && viewStack.length > 0 && document.activeElement?.tagName !== "INPUT") { e.preventDefault(); navigateBack(); }
     if (e.key === "Escape" && categoriesOpen) { categoriesOpen = false; }
   }
 
@@ -73,18 +69,9 @@
     return `${b} B`;
   }
   function fmtScore(s: number): string { return s < 0.001 ? "<0.001" : s.toFixed(4); }
-  function scoreColor(s: number): string {
-    if (s >= 0.3) return "#ef4444"; if (s >= 0.15) return "#f97316"; if (s >= 0.05) return "#eab308"; return "#22c55e";
-  }
-  function abbrevPath(p: string): string {
-    const i = p.indexOf("/Users/");
-    if (i >= 0) { const a = p.substring(i + 7); const s = a.indexOf("/"); if (s >= 0) return "~" + a.substring(s); }
-    return p;
-  }
-  function wastePercent(): string {
-    if (!scanResult || !scanResult.summary.total_size) return "0";
-    return ((scanResult.summary.waste_size / scanResult.summary.total_size) * 100).toFixed(1);
-  }
+  function scoreColor(s: number): string { if (s >= 0.3) return "#ef4444"; if (s >= 0.15) return "#f97316"; if (s >= 0.05) return "#eab308"; return "#22c55e"; }
+  function abbrevPath(p: string): string { const i = p.indexOf("/Users/"); if (i >= 0) { const a = p.substring(i + 7); const s = a.indexOf("/"); if (s >= 0) return "~" + a.substring(s); } return p; }
+  function wastePercent(): string { if (!scanResult || !scanResult.summary.total_size) return "0"; return ((scanResult.summary.waste_size / scanResult.summary.total_size) * 100).toFixed(1); }
   function canDrill(n: TreeNode | null): boolean { return !!n && n.is_directory && !!n.children && n.children.length > 0; }
 
   async function setPreset(p: string) {
@@ -110,16 +97,35 @@
         <div class="st"><span class="sl">Total</span><span class="sv">{fmtBytes(scanResult.summary.total_size)}</span></div>
         <div class="st waste"><span class="sl">Waste</span><span class="sv">{fmtBytes(scanResult.summary.waste_size)}</span></div>
         <div class="st waste"><span class="sl">Waste%</span><span class="sv">{wastePercent()}%</span></div>
-        <div class="st"><span class="sl">Time</span><span class="sv">{scanResult.summary.scan_time_ms.toLocaleString()}ms</span></div>
+        <div class="st"><span class="sl">Scan Time</span><span class="sv" title="Time the Rust backend took to walk the filesystem and build the tree">{scanResult.summary.scan_time_ms.toLocaleString()}ms</span></div>
       </div>
     {/if}
   </header>
 
   <div class="controls">
     <div class="row1">
-      <input type="text" bind:value={scanPath} placeholder="Path to scan..." class="pinput" disabled={scanning} />
+      <div class="path-wrap">
+        <input type="text" bind:value={scanPath} placeholder="Path to scan..."
+          class="pinput"
+          class:path-active={!!scanResult && !scanning}
+          disabled={scanning}
+          onfocus={() => showPathHistory = true}
+          onblur={() => setTimeout(() => { showPathHistory = false; }, 150)} />
+        {#if scanResult && !scanning}
+          <div class="path-current" title={displayPath}>
+            {abbrevPath(displayPath)}
+          </div>
+        {/if}
+        {#if showPathHistory && pathHistory.length > 0}
+          <div class="path-history">
+            {#each pathHistory as p}
+              <button class="ph-item" onclick={() => { scanPath = p; showPathHistory = false; }}>{abbrevPath(p)}</button>
+            {/each}
+          </div>
+        {/if}
+      </div>
       <select bind:value={maxDepth} class="dsel" disabled={scanning}>
-        <option value={3}>Depth 3</option><option value={4}>Depth 4</option><option value={5}>Depth 5</option><option value={6}>Depth 6</option><option value={8}>Depth 8</option>
+        <option value={1}>Depth 1</option><option value={2}>Depth 2</option><option value={3}>Depth 3</option><option value={4}>Depth 4</option><option value={5}>Depth 5</option><option value={6}>Depth 6</option><option value={7}>Depth 7</option><option value={8}>Depth 8</option>
       </select>
       <button onclick={startScan} class="sbtn" disabled={scanning}>
         {#if scanning}<span class="spin"></span>Scanning...{:else}Scan{/if}
@@ -143,6 +149,11 @@
           {/each}
           <button class="bbk" onclick={navigateBack}>← Back</button>
         </nav>
+      {:else if scanResult}
+        <nav class="bc">
+          <span class="crumb cur">{scanResult.tree.name}</span>
+          <span class="bsep bsep-dim">— {scanResult.summary.total_files.toLocaleString()} files &nbsp;·&nbsp; click a zone to explore inside</span>
+        </nav>
       {/if}
     </div>
   </div>
@@ -165,7 +176,7 @@
   </div>
 </main>
 
-<!-- CATEGORY PANEL -->
+<!-- CATEGORY PANEL — slides from RIGHT -->
 {#if categoriesOpen && scanResult}
   <button class="cat-overlay" onclick={toggleCategories} onkeydown={(e) => e.key === 'Escape' && toggleCategories()} aria-label="Close categories"></button>
   <div class="cat-panel">
@@ -173,9 +184,22 @@
       <span>Category Breakdown</span>
       <button class="cat-close" onclick={toggleCategories}>✕</button>
     </div>
+    <div class="cat-context">
+      <div class="cat-ctx-path" title={scanResult.tree.path}>{abbrevPath(scanResult.tree.path)}</div>
+      <div class="cat-ctx-sub">{scanResult.summary.total_files.toLocaleString()} files &nbsp;·&nbsp; {fmtBytes(scanResult.summary.total_size)} total</div>
+      <div class="cat-legend">
+        <span class="cat-lg-item" style="color:#22c55e">● Clean</span>
+        <span class="cat-lg-item" style="color:#eab308">● Moderate</span>
+        <span class="cat-lg-item" style="color:#ef4444">● Critical</span>
+      </div>
+      <div class="cat-ctx-hint">Waste score: 0 = clean, 1 = critical. Bar color reflects average score across all files in that category.</div>
+    </div>
     {#each [...scanResult.summary.categories].sort((a, b) => b.total_bytes - a.total_bytes) as cat}
       <div class="cat-row">
-        <div class="cat-name">{cat.name}</div>
+        <div class="cat-name-row">
+          <span class="cat-name">{cat.name}</span>
+          <span class="cat-score" style="color:{scoreColor(cat.avg_score)}">{fmtScore(cat.avg_score)}</span>
+        </div>
         <div class="cat-meta">
           <span>{fmtBytes(cat.total_bytes)}</span>
           <span class="cat-fc">{cat.file_count.toLocaleString()} files</span>
@@ -224,6 +248,27 @@
   .row2 { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; min-height: 24px; }
   .pinput { flex: 1; padding: 7px 12px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-family: var(--font-mono); font-size: 12px; outline: none; }
   .pinput:focus { border-color: var(--accent-dim); }
+  .pinput.path-active { padding-bottom: 18px; } /* make room for path-current overlay */
+
+  .path-wrap { flex: 1; position: relative; }
+  .path-current {
+    position: absolute; bottom: 5px; left: 13px; right: 8px;
+    font-size: 9px; font-family: var(--font-mono); color: var(--accent-dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    pointer-events: none; letter-spacing: 0.3px;
+  }
+  .path-history {
+    position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 500;
+    background: rgba(8,12,20,0.98); border: 1px solid var(--border); border-radius: 6px;
+    overflow: hidden; box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+  }
+  .ph-item {
+    display: block; width: 100%; text-align: left;
+    padding: 7px 12px; background: none; border: none; border-bottom: 1px solid rgba(255,255,255,0.04);
+    color: var(--text-secondary); font-family: var(--font-mono); font-size: 11px; cursor: pointer;
+  }
+  .ph-item:last-child { border-bottom: none; }
+  .ph-item:hover { background: rgba(14,165,233,0.08); color: var(--text-primary); }
   .dsel { padding: 7px 10px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-size: 12px; outline: none; cursor: pointer; }
   .sbtn { padding: 7px 22px; background: var(--accent-dim); border: none; border-radius: 6px; color: white; font-weight: 600; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
   .sbtn:hover:not(:disabled) { background: var(--accent); }
@@ -243,6 +288,7 @@
   .crumb:hover { background: rgba(14,165,233,0.1); color: var(--accent); }
   .crumb.cur { color: var(--text-primary); font-weight: 600; }
   .bsep { color: var(--text-muted); font-size: 12px; }
+  .bsep-dim { color: var(--text-muted); font-size: 10px; font-style: italic; opacity: 0.6; }
   .bbk { background: none; border: 1px solid var(--border); color: var(--text-muted); cursor: pointer; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 6px; font-family: var(--font-mono); }
   .bbk:hover { border-color: var(--accent-dim); color: var(--text-primary); }
 
@@ -256,19 +302,28 @@
   .ring.r2 { animation-delay: 0.5s; border-color: var(--accent-dim); }
   @keyframes pul { 0% { transform: scale(0.6); opacity: 0.6; } 50% { transform: scale(1.2); opacity: 0.2; } 100% { transform: scale(0.6); opacity: 0.6; } }
 
+  /* Category panel — slides from RIGHT */
   .cat-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 900; border: none; cursor: default; }
   .cat-panel {
-    position: fixed; top: 0; left: 0; z-index: 1000;
+    position: fixed; top: 0; right: 0; z-index: 1000;
     width: 320px; height: 100vh;
-    background: rgba(8,12,20,0.98); border-right: 1px solid var(--border);
+    background: rgba(8,12,20,0.98); border-left: 1px solid var(--border);
     overflow-y: auto; padding: 16px;
-    box-shadow: 4px 0 24px rgba(0,0,0,0.5);
+    box-shadow: -4px 0 24px rgba(0,0,0,0.5);
   }
-  .cat-head { display: flex; justify-content: space-between; align-items: center; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-muted); margin-bottom: 16px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+  .cat-head { display: flex; justify-content: space-between; align-items: center; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-muted); margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
   .cat-close { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; padding: 4px 8px; border-radius: 4px; }
   .cat-close:hover { color: var(--text-primary); background: rgba(255,255,255,0.05); }
+  .cat-context { margin-bottom: 16px; padding: 10px; background: rgba(255,255,255,0.03); border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); }
+  .cat-ctx-path { font-size: 11px; font-family: var(--font-mono); color: var(--accent-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 3px; }
+  .cat-ctx-sub { font-size: 10px; color: var(--text-muted); margin-bottom: 8px; }
+  .cat-legend { display: flex; gap: 10px; margin-bottom: 6px; }
+  .cat-lg-item { font-size: 10px; font-weight: 600; }
+  .cat-ctx-hint { font-size: 9px; color: var(--text-muted); line-height: 1.4; opacity: 0.7; }
   .cat-row { margin-bottom: 14px; }
-  .cat-name { font-size: 12px; font-weight: 600; color: var(--text-primary); margin-bottom: 2px; }
+  .cat-name-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2px; }
+  .cat-name { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+  .cat-score { font-size: 10px; font-family: var(--font-mono); font-weight: 700; }
   .cat-meta { display: flex; justify-content: space-between; font-size: 10px; font-family: var(--font-mono); margin-bottom: 4px; color: var(--text-secondary); }
   .cat-fc { color: var(--text-muted); }
   .cat-bg { height: 4px; background: rgba(255,255,255,0.05); border-radius: 2px; overflow: hidden; }
