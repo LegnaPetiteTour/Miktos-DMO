@@ -128,7 +128,7 @@ pub fn scan(config: &ScanConfig) -> Result<Vec<FileNode>, ScanError> {
     if !errors.is_empty() {
         log::warn!("Scan completed with {} errors", errors.len());
         for e in errors.iter().take(10) {
-            log::debug!("  {}", e);
+            log::warn!("  scan error: {}", e);
         }
     }
 

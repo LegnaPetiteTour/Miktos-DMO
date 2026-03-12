@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { hierarchy } from "d3-hierarchy";
-  import { voronoiTreemap as voronoiTreemapFn } from "d3-voronoi-treemap";
+  import { voronoiTreemap } from "d3-voronoi-treemap";
   import type { TreeNode } from "./types";
 
   let {
@@ -20,9 +20,10 @@
   let height = $state(600);
   let cells: RenderedCell[] = $state([]);
   let hoveredIndex: number = $state(-1);
-  let layoutError: string = $state("");
   let mounted = $state(false);
-  let renderMode: string = $state("");  // "voronoi" | "fallback" | empty
+  let computing = $state(false);
+
+  const MAX_ZONES = 80; // Cap for Voronoi performance
 
   interface RenderedCell {
     polygon: [number, number][];
@@ -31,189 +32,147 @@
     glowColor: string;
     centroid: [number, number];
     area: number;
+    drillable: boolean;
   }
 
   // ═══════════════════════════════════════════════════
-  // COLOR SYSTEM — Score + Size hybrid
+  // COLOR
   // ═══════════════════════════════════════════════════
 
-  // The visual intensity combines waste_score (how likely it's waste)
-  // with a size boost (large caches are visually important even at low scores).
-  // An 8GB cache at score 0.05 should look warmer than a 2MB file at 0.05.
-  function visualIntensity(rawScore: number, sizeBytes: number): number {
-    const scorePart = Math.pow(Math.min(rawScore * 2.5, 1.0), 0.55);
-
-    // Size boost: log-scaled, kicks in above 100MB
-    const sizeMB = sizeBytes / (1024 * 1024);
-    const sizeBoost = sizeMB > 100 ? Math.min(Math.log10(sizeMB / 100) * 0.15, 0.25) : 0;
-
+  function visualIntensity(score: number, size: number): number {
+    const scorePart = Math.pow(Math.min(score * 2.5, 1.0), 0.55);
+    const mb = size / (1024 * 1024);
+    const sizeBoost = mb > 100 ? Math.min(Math.log10(mb / 100) * 0.15, 0.25) : 0;
     return Math.min(scorePart + sizeBoost, 1.0);
   }
 
-  function wasteColor(rawScore: number, sizeBytes: number): string {
-    const s = visualIntensity(rawScore, sizeBytes);
+  function wasteColor(score: number, size: number): string {
+    const s = visualIntensity(score, size);
     let r: number, g: number, b: number;
-
-    if (s < 0.20) {
-      const t = s / 0.20;
-      r = lerp(10, 14, t); g = lerp(30, 80, t); b = lerp(60, 95, t);
-    } else if (s < 0.40) {
-      const t = (s - 0.20) / 0.20;
-      r = lerp(14, 50, t); g = lerp(80, 115, t); b = lerp(95, 80, t);
-    } else if (s < 0.60) {
-      const t = (s - 0.40) / 0.20;
-      r = lerp(50, 185, t); g = lerp(115, 125, t); b = lerp(80, 25, t);
-    } else if (s < 0.80) {
-      const t = (s - 0.60) / 0.20;
-      r = lerp(185, 225, t); g = lerp(125, 80, t); b = lerp(25, 10, t);
-    } else {
-      const t = (s - 0.80) / 0.20;
-      r = lerp(225, 200, t); g = lerp(80, 25, t); b = lerp(10, 25, t);
-    }
+    if (s < 0.20)      { const t = s/0.20;        r = lerp(10,14,t);  g = lerp(30,80,t);   b = lerp(60,95,t); }
+    else if (s < 0.40)  { const t = (s-0.20)/0.20; r = lerp(14,50,t);  g = lerp(80,115,t);  b = lerp(95,80,t); }
+    else if (s < 0.60)  { const t = (s-0.40)/0.20; r = lerp(50,185,t); g = lerp(115,125,t); b = lerp(80,25,t); }
+    else if (s < 0.80)  { const t = (s-0.60)/0.20; r = lerp(185,225,t); g = lerp(125,80,t); b = lerp(25,10,t); }
+    else                 { const t = (s-0.80)/0.20; r = lerp(225,200,t); g = lerp(80,25,t);  b = lerp(10,25,t); }
     return `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
   }
 
-  function wasteGlow(rawScore: number, sizeBytes: number): string {
-    const s = visualIntensity(rawScore, sizeBytes);
-    if (s > 0.6) return "rgba(239, 68, 68, 0.30)";
-    if (s > 0.4) return "rgba(245, 158, 11, 0.22)";
-    if (s > 0.2) return "rgba(20, 184, 166, 0.15)";
-    return "rgba(56, 189, 248, 0.08)";
+  function glowColor(score: number, size: number): string {
+    const s = visualIntensity(score, size);
+    if (s > 0.6) return "rgba(239,68,68,0.28)";
+    if (s > 0.4) return "rgba(245,158,11,0.20)";
+    if (s > 0.2) return "rgba(20,184,166,0.12)";
+    return "rgba(56,189,248,0.06)";
   }
 
-  function borderAlpha(rawScore: number, sizeBytes: number): string {
-    const s = visualIntensity(rawScore, sizeBytes);
-    if (s > 0.6) return "rgba(239, 68, 68, 0.45)";
-    if (s > 0.4) return "rgba(245, 158, 11, 0.30)";
-    if (s > 0.2) return "rgba(100, 200, 200, 0.18)";
-    return "rgba(56, 189, 248, 0.08)";
+  function borderStyle(score: number, size: number): string {
+    const s = visualIntensity(score, size);
+    if (s > 0.6) return "rgba(239,68,68,0.45)";
+    if (s > 0.4) return "rgba(245,158,11,0.28)";
+    if (s > 0.2) return "rgba(100,200,200,0.16)";
+    return "rgba(56,189,248,0.08)";
   }
 
-  function lerp(a: number, b: number, t: number): number {
-    return a + (b - a) * t;
-  }
+  function lerp(a: number, b: number, t: number): number { return a + (b - a) * t; }
 
   // ═══════════════════════════════════════════════════
-  // LAYOUT
+  // LAYOUT — Capped at MAX_ZONES for performance
   // ═══════════════════════════════════════════════════
+
+  function prepareChildren(treeData: TreeNode): TreeNode[] {
+    let items = (treeData.children || []).filter(c => c.size > 0);
+    if (items.length === 0) return [];
+
+    // Sort by size descending
+    items.sort((a, b) => b.size - a.size);
+
+    // If within limit, return as-is
+    if (items.length <= MAX_ZONES) return items;
+
+    // Keep top items, aggregate the rest into "Other"
+    const keep = items.slice(0, MAX_ZONES - 1);
+    const rest = items.slice(MAX_ZONES - 1);
+
+    const otherSize = rest.reduce((s, c) => s + c.size, 0);
+    const otherFiles = rest.reduce((s, c) => s + (c.file_count || 1), 0);
+    const otherScore = otherSize > 0
+      ? rest.reduce((s, c) => s + c.waste_score * c.size, 0) / otherSize
+      : 0;
+
+    const otherNode: TreeNode = {
+      name: `Other (${rest.length} items)`,
+      path: treeData.path + "/__other__",
+      size: otherSize,
+      file_count: otherFiles,
+      waste_score: otherScore,
+      category: "Mixed",
+      is_directory: false, // Not drillable
+      children: [],
+    };
+
+    return [...keep, otherNode];
+  }
 
   function computeLayout(treeData: TreeNode, w: number, h: number): RenderedCell[] {
-    layoutError = "";
+    const items = prepareChildren(treeData);
+    if (items.length === 0) return [];
 
-    if (!treeData) { layoutError = "No data"; return []; }
+    // Shallow copies without children for Voronoi (treats as leaves)
+    const leaves = items.map(item => ({
+      name: item.name,
+      path: item.path,
+      size: item.size,
+      waste_score: item.waste_score,
+      file_count: item.file_count,
+      category: item.category,
+      is_directory: item.is_directory,
+    }));
 
-    const items = (treeData.children || []).filter(c => c.size > 0);
-    if (items.length === 0) {
-      layoutError = `No visible children (${treeData.children?.length ?? 0} total)`;
+    const wrapper = { name: treeData.name, size: treeData.size, children: leaves };
+
+    const root = hierarchy(wrapper, (d: any) =>
+        d.children && d.children.length > 0 ? d.children : null
+      )
+      .sum((d: any) => (!d.children || d.children.length === 0) ? Math.max(d.size || 0, 1) : 0)
+      .sort((a: any, b: any) => (b.value || 0) - (a.value || 0));
+
+    if (!root.value) return [];
+
+    const pad = 6;
+    const clip: [number, number][] = [[pad, pad], [w - pad, pad], [w - pad, h - pad], [pad, h - pad]];
+
+    try {
+      voronoiTreemap().clip(clip).minWeightRatio(0.01).maxIterationCount(80)(root);
+    } catch (e) {
+      console.warn("[DMO] Voronoi error:", e);
       return [];
     }
 
-    console.log(`[DMO] Layout: ${items.length} items, ${w}x${h}`);
-
-    // Build a FLAT 2-level hierarchy: root → items as leaves.
-    // We intentionally strip item.children so Voronoi doesn't recurse into
-    // thousands of individual files (which would make iteration never converge).
-    // Originals are kept in a map so drill-down onClick still receives the full node.
-    const originalMap = new Map(items.map(n => [n.path, n]));
-    const flatItems: any[] = items.map(c => ({
-      name: c.name, path: c.path, size: c.size,
-      waste_score: c.waste_score, category: c.category,
-      is_directory: c.is_directory, file_count: c.file_count,
-      children: undefined,
-    }));
-    const wrapper = { name: treeData.name, path: treeData.path, children: flatItems };
-
-    const root = hierarchy(wrapper, (d: any) => d.children?.length ? d.children : null)
-      .sum((d: any) => (!d.children?.length) ? Math.max(d.size || 0, 1) : 0)
-      .sort((a: any, b: any) => (b.value || 0) - (a.value || 0));
-
-    if (!root.value) { layoutError = "Zero total"; return []; }
-
-    const pad = 6;
-    const clip: [number, number][] = [
-      [pad, pad], [w - pad, pad], [w - pad, h - pad], [pad, h - pad],
-    ];
-
-    try {
-      voronoiTreemapFn()
-        .clip(clip)
-        .minWeightRatio(0.002)
-        .maxIterationCount(300)
-        .convergenceRatio(0.005)(root);
-
-      const result = extractCells(root, originalMap);
-      if (result.length > 0) {
-        const avgPts = Math.round(result.reduce((s, c) => s + c.polygon.length, 0) / result.length);
-        console.log(`[DMO] Voronoi OK: ${result.length} cells, avg ${avgPts} pts/cell`);
-        renderMode = `voronoi (${avgPts}pts)`;
-        return result;
-      }
-      console.warn("[DMO] Voronoi produced 0 cells — falling back");
-    } catch (e) {
-      console.warn("[DMO] Voronoi error, using fallback:", e);
-    }
-
-    renderMode = "fallback";
-    return fallbackGrid(items, w, h, pad);
-  }
-
-  function extractCells(root: any, originalMap?: Map<string, TreeNode>): RenderedCell[] {
     const result: RenderedCell[] = [];
     for (const leaf of root.leaves()) {
-      const poly = leaf.polygon;
+      const poly = (leaf as any).polygon;
       if (!poly || poly.length < 3) continue;
 
-      const flat = leaf.data as any;
-      // Restore original node so drill-down gets the full children list
-      const node: TreeNode = originalMap?.get(flat.path) ?? flat;
-      const points: [number, number][] = poly.map((p: any) => [p[0], p[1]]);
+      const ld = leaf.data as any;
+      // Find the original item (with children intact) for drill-down
+      const origItem = items.find(i => i.path === ld.path) || ld;
 
+      const points: [number, number][] = poly.map((p: any) => [p[0], p[1]]);
       let cx = 0, cy = 0;
       for (const [x, y] of points) { cx += x; cy += y; }
       cx /= points.length; cy /= points.length;
 
+      const drillable = origItem.is_directory && origItem.children && origItem.children.length > 0;
+
       result.push({
         polygon: points,
-        node,
-        fillColor: wasteColor(node.waste_score, node.size),
-        glowColor: wasteGlow(node.waste_score, node.size),
+        node: origItem as TreeNode,
+        fillColor: wasteColor(origItem.waste_score, origItem.size),
+        glowColor: glowColor(origItem.waste_score, origItem.size),
         centroid: [cx, cy],
-        area: polygonArea(points),
+        area: polyArea(points),
+        drillable,
       });
-    }
-    return result;
-  }
-
-  function fallbackGrid(children: TreeNode[], w: number, h: number, pad: number): RenderedCell[] {
-    const totalSize = children.reduce((s, c) => s + c.size, 0);
-    if (totalSize === 0) return [];
-
-    const result: RenderedCell[] = [];
-    const usableW = w - pad * 2;
-    const usableH = h - pad * 2;
-    const cols = Math.ceil(Math.sqrt(children.length));
-    const cellW = usableW / cols;
-    let x = pad, y = pad, rowH = 0;
-
-    for (const child of children) {
-      const frac = child.size / totalSize;
-      const h2 = Math.max(usableH * frac * cols, 20);
-
-      if (x + cellW > w - pad + 1) { x = pad; y += rowH + 2; rowH = 0; }
-
-      const x2 = x + cellW - 2, y2 = y + h2;
-      rowH = Math.max(rowH, h2);
-
-      const polygon: [number, number][] = [[x, y], [x2, y], [x2, y2], [x, y2]];
-      result.push({
-        polygon,
-        node: child,
-        fillColor: wasteColor(child.waste_score, child.size),
-        glowColor: wasteGlow(child.waste_score, child.size),
-        centroid: [(x + x2) / 2, (y + y2) / 2],
-        area: (x2 - x) * (y2 - y),
-      });
-      x += cellW;
     }
     return result;
   }
@@ -235,102 +194,98 @@
     ctx.fillStyle = "#080c14";
     ctx.fillRect(0, 0, width, height);
 
+    if (computing) {
+      ctx.fillStyle = "rgba(255,255,255,0.3)";
+      ctx.font = "14px monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("Computing terrain...", width / 2, height / 2);
+      return;
+    }
+
     if (cells.length === 0) {
       ctx.fillStyle = "rgba(255,255,255,0.25)";
       ctx.font = "13px monospace";
       ctx.textAlign = "center";
-      ctx.fillText(layoutError || "No data to render", width / 2, height / 2);
+      ctx.fillText("No zones to display", width / 2, height / 2);
       return;
     }
 
     for (let i = 0; i < cells.length; i++) {
       const cell = cells[i];
       if (cell.polygon.length < 3) continue;
-      const isHovered = i === hoveredIndex;
+      const hov = i === hoveredIndex;
 
       ctx.beginPath();
       ctx.moveTo(cell.polygon[0][0], cell.polygon[0][1]);
-      for (let j = 1; j < cell.polygon.length; j++) {
-        ctx.lineTo(cell.polygon[j][0], cell.polygon[j][1]);
-      }
+      for (let j = 1; j < cell.polygon.length; j++) ctx.lineTo(cell.polygon[j][0], cell.polygon[j][1]);
       ctx.closePath();
 
-      // Fill
       ctx.fillStyle = cell.fillColor;
       ctx.fill();
 
-      // Glow overlay for waste zones
-      if (!isHovered && cell.node.waste_score > 0.02) {
+      if (!hov && cell.node.waste_score > 0.02) {
         ctx.fillStyle = cell.glowColor;
         ctx.fill();
       }
 
-      // Hover
-      if (isHovered) {
-        ctx.fillStyle = "rgba(255, 255, 255, 0.10)";
+      if (hov) {
+        ctx.fillStyle = cell.drillable ? "rgba(56,189,248,0.12)" : "rgba(255,255,255,0.10)";
         ctx.fill();
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.5)";
+        ctx.strokeStyle = cell.drillable ? "rgba(56,189,248,0.6)" : "rgba(255,255,255,0.5)";
         ctx.lineWidth = 2.5;
         ctx.stroke();
       } else {
-        ctx.strokeStyle = borderAlpha(cell.node.waste_score, cell.node.size);
+        ctx.strokeStyle = borderStyle(cell.node.waste_score, cell.node.size);
         ctx.lineWidth = 0.6;
         ctx.stroke();
       }
 
-      // Directory indicator: thin inner border
-      if (cell.node.is_directory && cell.node.children?.length > 0 && cell.area > 3000) {
-        ctx.strokeStyle = "rgba(56, 189, 248, 0.12)";
+      // Drillable indicator (subtle dashed border)
+      if (cell.drillable && !hov && cell.area > 3000) {
+        ctx.save();
+        ctx.strokeStyle = "rgba(56,189,248,0.12)";
         ctx.lineWidth = 0.4;
-        ctx.setLineDash([3, 3]);
+        ctx.setLineDash([3, 4]);
         ctx.stroke();
-        ctx.setLineDash([]);
+        ctx.restore();
       }
 
       // Labels
       if (cell.area > 1200) {
         const maxDim = Math.sqrt(cell.area);
-        const fontSize = Math.max(8, Math.min(14, maxDim / 7));
-
-        ctx.font = `500 ${fontSize}px "SF Mono", "Fira Code", monospace`;
+        const fs = Math.max(8, Math.min(14, maxDim / 7));
+        ctx.font = `500 ${fs}px "SF Mono","Fira Code",monospace`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
 
-        let displayLabel = cell.node.name;
-        const maxWidth = maxDim * 0.75;
-        while (ctx.measureText(displayLabel).width > maxWidth && displayLabel.length > 4) {
-          displayLabel = displayLabel.slice(0, -2) + "\u2026";
-        }
+        let lbl = cell.node.name;
+        const mw = maxDim * 0.75;
+        while (ctx.measureText(lbl).width > mw && lbl.length > 4) lbl = lbl.slice(0, -2) + "\u2026";
 
-        // Shadow
-        ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
-        ctx.fillText(displayLabel, cell.centroid[0] + 1, cell.centroid[1] + 1);
-
-        // Text
-        const alpha = isHovered ? 1.0 : (visualIntensity(cell.node.waste_score, cell.node.size) > 0.3 ? 0.9 : 0.6);
-        ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
-        ctx.fillText(displayLabel, cell.centroid[0], cell.centroid[1]);
+        ctx.fillStyle = "rgba(0,0,0,0.75)";
+        ctx.fillText(lbl, cell.centroid[0] + 1, cell.centroid[1] + 1);
+        const alpha = hov ? 1 : (visualIntensity(cell.node.waste_score, cell.node.size) > 0.3 ? 0.9 : 0.6);
+        ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+        ctx.fillText(lbl, cell.centroid[0], cell.centroid[1]);
 
         // Size sublabel
         if (cell.area > 6000) {
-          const sizeStr = fmtBytes(cell.node.size);
-          const smallFont = Math.max(7, fontSize - 3);
-          ctx.font = `400 ${smallFont}px "SF Mono", monospace`;
-          ctx.fillStyle = `rgba(255, 255, 255, ${isHovered ? 0.65 : 0.28})`;
-          ctx.fillText(sizeStr, cell.centroid[0], cell.centroid[1] + fontSize);
+          ctx.font = `400 ${Math.max(7, fs - 3)}px "SF Mono",monospace`;
+          ctx.fillStyle = `rgba(255,255,255,${hov ? 0.65 : 0.28})`;
+          ctx.fillText(fmtB(cell.node.size), cell.centroid[0], cell.centroid[1] + fs);
         }
       }
     }
   }
 
-  function fmtBytes(b: number): string {
-    if (b >= 1024 ** 3) return `${(b / 1024 ** 3).toFixed(1)}G`;
-    if (b >= 1024 ** 2) return `${(b / 1024 ** 2).toFixed(0)}M`;
+  function fmtB(b: number): string {
+    if (b >= 1073741824) return `${(b / 1073741824).toFixed(1)}G`;
+    if (b >= 1048576) return `${(b / 1048576).toFixed(0)}M`;
     if (b >= 1024) return `${(b / 1024).toFixed(0)}K`;
     return `${b}B`;
   }
 
-  function polygonArea(pts: [number, number][]): number {
+  function polyArea(pts: [number, number][]): number {
     let a = 0;
     for (let i = 0, n = pts.length; i < n; i++) {
       const j = (i + 1) % n;
@@ -340,15 +295,14 @@
   }
 
   // ═══════════════════════════════════════════════════
-  // HIT DETECTION & EVENTS
+  // EVENTS
   // ═══════════════════════════════════════════════════
 
-  function pointInPoly(x: number, y: number, poly: [number, number][]): boolean {
+  function pip(x: number, y: number, poly: [number, number][]): boolean {
     let inside = false;
     for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
       const [xi, yi] = poly[i], [xj, yj] = poly[j];
-      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi)
-        inside = !inside;
+      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
     }
     return inside;
   }
@@ -357,10 +311,14 @@
     if (!canvas || cells.length === 0) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left, y = e.clientY - rect.top;
-
     let idx = -1;
-    for (let i = 0; i < cells.length; i++) {
-      if (pointInPoly(x, y, cells[i].polygon)) { idx = i; break; }
+    for (let i = 0; i < cells.length; i++) { if (pip(x, y, cells[i].polygon)) { idx = i; break; } }
+
+    // Change cursor based on drillable
+    if (idx >= 0 && cells[idx].drillable) {
+      canvas.style.cursor = "pointer";
+    } else {
+      canvas.style.cursor = "crosshair";
     }
 
     if (idx !== hoveredIndex) { hoveredIndex = idx; render(); }
@@ -368,6 +326,7 @@
   }
 
   function handleMouseLeave() {
+    if (canvas) canvas.style.cursor = "crosshair";
     if (hoveredIndex !== -1) { hoveredIndex = -1; render(); }
     onHover(null, 0, 0);
   }
@@ -376,12 +335,8 @@
     if (!canvas || cells.length === 0) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left, y = e.clientY - rect.top;
-
     for (let i = 0; i < cells.length; i++) {
-      if (pointInPoly(x, y, cells[i].polygon)) {
-        onClick(cells[i].node);
-        return;
-      }
+      if (pip(x, y, cells[i].polygon)) { onClick(cells[i].node); return; }
     }
   }
 
@@ -391,23 +346,31 @@
 
   function updateSize() {
     if (!container) return;
-    const rect = container.getBoundingClientRect();
-    const nw = Math.floor(rect.width), nh = Math.floor(rect.height);
-    if (nw > 0 && nh > 0 && (nw !== width || nh !== height)) {
-      width = nw; height = nh;
-    }
+    const r = container.getBoundingClientRect();
+    const nw = Math.floor(r.width), nh = Math.floor(r.height);
+    if (nw > 0 && nh > 0 && (nw !== width || nh !== height)) { width = nw; height = nh; }
+  }
+
+  async function recompute() {
+    if (!tree || width <= 0 || height <= 0) return;
+    computing = true;
+    render(); // Show "Computing terrain..."
+
+    // Yield to browser to paint the loading message
+    await new Promise(r => setTimeout(r, 20));
+
+    cells = computeLayout(tree, width, height);
+    computing = false;
+    await tick();
+    render();
   }
 
   onMount(() => {
     updateSize();
     mounted = true;
-
     const obs = new ResizeObserver(() => {
       updateSize();
-      if (tree && width > 0 && height > 0) {
-        cells = computeLayout(tree, width, height);
-        tick().then(() => render());
-      }
+      recompute();
     });
     if (container) obs.observe(container);
     return () => obs.disconnect();
@@ -415,43 +378,28 @@
 
   $effect(() => {
     if (!mounted) return;
-    const _t = tree; const _w = width; const _h = height;
+    const _t = tree, _w = width, _h = height;
     if (_t && _w > 0 && _h > 0) {
-      cells = computeLayout(_t, _w, _h);
-      tick().then(() => render());
+      recompute();
     }
   });
 </script>
 
 <div class="treemap-wrapper no-select" bind:this={container}>
-  <canvas
-    bind:this={canvas}
-    style="width: {width}px; height: {height}px;"
-    onmousemove={handleMouseMove}
-    onmouseleave={handleMouseLeave}
-    onclick={handleClick}
-  ></canvas>
-
+  <canvas bind:this={canvas} style="width: {width}px; height: {height}px;"
+    onmousemove={handleMouseMove} onmouseleave={handleMouseLeave} onclick={handleClick}></canvas>
   <div class="legend">
     <div class="legend-title">Terrain Health</div>
     <div class="legend-gradient"></div>
-    <div class="legend-labels">
-      <span>Clean</span>
-      <span>Moderate</span>
-      <span>Critical</span>
-    </div>
-    <div class="legend-count">{cells.length} zones{renderMode ? ` · ${renderMode}` : ""}</div>
+    <div class="legend-labels"><span>Clean</span><span>Moderate</span><span>Critical</span></div>
+    <div class="legend-count">{cells.length} zones</div>
   </div>
 </div>
 
 <style>
   .treemap-wrapper { width: 100%; height: 100%; position: relative; overflow: hidden; }
   canvas { display: block; cursor: crosshair; }
-  .legend {
-    position: absolute; top: 12px; right: 12px;
-    background: rgba(8, 12, 20, 0.90); border: 1px solid rgba(30, 41, 59, 0.8);
-    border-radius: 8px; padding: 10px 14px; backdrop-filter: blur(12px); pointer-events: none;
-  }
+  .legend { position: absolute; top: 12px; right: 12px; background: rgba(8,12,20,0.90); border: 1px solid rgba(30,41,59,0.8); border-radius: 8px; padding: 10px 14px; backdrop-filter: blur(12px); pointer-events: none; }
   .legend-title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-muted); margin-bottom: 8px; font-weight: 600; }
   .legend-gradient { width: 140px; height: 10px; border-radius: 5px; background: linear-gradient(to right, #0a1e3c, #0e5060, #327340, #b48220, #e05a0f, #c81e1e); }
   .legend-labels { display: flex; justify-content: space-between; font-size: 9px; color: var(--text-muted); margin-top: 4px; }

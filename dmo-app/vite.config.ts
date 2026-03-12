@@ -8,6 +8,9 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
   },
+  optimizeDeps: {
+    include: ['d3-voronoi-treemap', 'd3-voronoi-map', 'd3-hierarchy'],
+  },
   envPrefix: ["VITE_", "TAURI_"],
   build: {
     target: "esnext",

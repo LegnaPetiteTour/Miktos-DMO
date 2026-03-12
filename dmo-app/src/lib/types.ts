@@ -4,6 +4,7 @@ export interface TreeNode {
   name: string;
   path: string;
   size: number;
+  file_count: number;
   waste_score: number;
   category: string;
   is_directory: boolean;
@@ -30,12 +31,4 @@ export interface CategoryInfo {
   file_count: number;
   total_bytes: number;
   avg_score: number;
-}
-
-// Voronoi cell after layout computation
-export interface VoronoiCell {
-  node: TreeNode;
-  polygon: [number, number][];
-  color: string;
-  centroid: [number, number];
 }
