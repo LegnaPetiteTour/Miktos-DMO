@@ -22,6 +22,7 @@
   let hoveredIndex: number = $state(-1);
   let mounted = $state(false);
   let computing = $state(false);
+  let recomputeId = 0; // cancellation token
 
   const MAX_ZONES = 80; // Cap for Voronoi performance
 
@@ -142,10 +143,14 @@
     const clip: [number, number][] = [[pad, pad], [w - pad, pad], [w - pad, h - pad], [pad, h - pad]];
 
     try {
-      voronoiTreemap().clip(clip).minWeightRatio(0.01).maxIterationCount(80)(root);
+      voronoiTreemap()
+        .clip(clip)
+        .minWeightRatio(0.005)
+        .convergenceRatio(0.005)
+        .maxIterationCount(250)(root);
     } catch (e) {
       console.warn("[DMO] Voronoi error:", e);
-      return [];
+      return fallbackGrid(items, w, h, pad);
     }
 
     const result: RenderedCell[] = [];
@@ -173,6 +178,48 @@
         area: polyArea(points),
         drillable,
       });
+    }
+
+    if (result.length === 0) {
+      console.warn("[DMO] Voronoi returned 0 valid cells — using fallback grid");
+      return fallbackGrid(items, w, h, pad);
+    }
+
+    return result;
+  }
+
+  // Proportional treemap fallback (sliced columns)
+  function fallbackGrid(items: TreeNode[], w: number, h: number, pad: number): RenderedCell[] {
+    const totalSize = items.reduce((s, c) => s + c.size, 0);
+    if (totalSize === 0) return [];
+    const usableW = w - pad * 2;
+    const usableH = h - pad * 2;
+    const cols = Math.ceil(Math.sqrt(items.length));
+    const colW = usableW / cols;
+    const result: RenderedCell[] = [];
+    let colIdx = 0, x = pad;
+    for (let ci = 0; ci < cols && colIdx < items.length; ci++, x += colW) {
+      // Items in this column
+      const slice = items.slice(ci * Math.ceil(items.length / cols),
+                                (ci + 1) * Math.ceil(items.length / cols));
+      const colTotal = slice.reduce((s, c) => s + c.size, 0);
+      let y = pad;
+      for (const item of slice) {
+        const frac = colTotal > 0 ? item.size / colTotal : 1 / slice.length;
+        const cellH = Math.max(frac * usableH, 16);
+        const x2 = x + colW - 2, y2 = y + cellH - 2;
+        const polygon: [number, number][] = [[x, y], [x2, y], [x2, y2], [x, y2]];
+        const cx = (x + x2) / 2, cy = (y + y2) / 2;
+        result.push({
+          polygon, node: item,
+          fillColor: wasteColor(item.waste_score, item.size),
+          glowColor: glowColor(item.waste_score, item.size),
+          centroid: [cx, cy],
+          area: (x2 - x) * (y2 - y),
+          drillable: item.is_directory && item.children?.length > 0,
+        });
+        y += cellH;
+      }
     }
     return result;
   }
@@ -353,16 +400,20 @@
 
   async function recompute() {
     if (!tree || width <= 0 || height <= 0) return;
+    const myId = ++recomputeId; // take a snapshot of the current generation
     computing = true;
     render(); // Show "Computing terrain..."
 
     // Yield to browser to paint the loading message
     await new Promise(r => setTimeout(r, 20));
 
+    // If a newer recompute was triggered while we waited, bail out
+    if (myId !== recomputeId) return;
+
     cells = computeLayout(tree, width, height);
     computing = false;
     await tick();
-    render();
+    if (myId === recomputeId) render();
   }
 
   onMount(() => {

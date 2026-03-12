@@ -14,10 +14,9 @@
   let viewStack: TreeNode[] = $state([]);
   let categoriesOpen: boolean = $state(false);
 
-  function getCurrentView(): TreeNode | null {
-    if (viewStack.length > 0) return viewStack[viewStack.length - 1];
-    return scanResult?.tree ?? null;
-  }
+  const currentView = $derived(
+    viewStack.length > 0 ? viewStack[viewStack.length - 1] : (scanResult?.tree ?? null)
+  );
 
   async function init() {
     try {
@@ -156,8 +155,8 @@
         <div class="anim"><div class="ring"></div><div class="ring r2"></div></div>
         <p>Scanning filesystem...</p><p class="sub">Observing the terrain</p>
       </div>
-    {:else if getCurrentView()}
-      <Treemap tree={getCurrentView()!} onHover={handleHover} onClick={handleCellClick} />
+    {:else if currentView}
+      <Treemap tree={currentView} onHover={handleHover} onClick={handleCellClick} />
     {:else}
       <div class="mid">
         <p>Select a path and press Scan</p><p class="sub">The organism will navigate toward waste</p>
@@ -174,7 +173,7 @@
       <span>Category Breakdown</span>
       <button class="cat-close" onclick={toggleCategories}>✕</button>
     </div>
-    {#each scanResult.summary.categories.sort((a, b) => b.total_bytes - a.total_bytes) as cat}
+    {#each [...scanResult.summary.categories].sort((a, b) => b.total_bytes - a.total_bytes) as cat}
       <div class="cat-row">
         <div class="cat-name">{cat.name}</div>
         <div class="cat-meta">
