@@ -2,7 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import Treemap from "./lib/Treemap.svelte";
-  import type { ScanResult, TreeNode } from "./lib/types";
+  import type { ScanResult, TreeNode, TerrainCell } from "./lib/types";
 
   let scanResult: ScanResult | null = $state(null);
   let scanning: boolean = $state(false);
@@ -17,6 +17,12 @@
   let pathHistory: string[] = $state([]);
   let showPathHistory: boolean = $state(false);
   let pathInputEl: HTMLInputElement | null = $state(null);
+  // Phase 2 bridge: terrain layout emitted by Treemap after each Voronoi computation.
+  // The Physarum simulation reads terrainCells to build its chemoattractant texture.
+  let terrainCells: TerrainCell[] = $state([]);
+  // Overlay canvas for the WebGL2 Physarum particle simulation (Phase 2).
+  // Sits above the Treemap 2D canvas; pointer-events disabled so map interaction still works.
+  let overlayCanvas: HTMLCanvasElement | null = $state(null);
 
   $effect(() => {
     const _ = scanPath; // track path changes
@@ -202,7 +208,10 @@
         <p>Scanning filesystem...</p><p class="sub">Observing the terrain</p>
       </div>
     {:else if currentView}
-      <Treemap tree={currentView} onHover={handleHover} onClick={handleCellClick} />
+      <Treemap tree={currentView} onHover={handleHover} onClick={handleCellClick}
+        onCells={cells => { terrainCells = cells; }} />
+      <!-- Phase 2: WebGL2 Physarum overlay — bound but invisible until simulation starts -->
+      <canvas bind:this={overlayCanvas} class="sim-overlay"></canvas>
     {:else}
       <div class="mid">
         <p>Select a path and press Scan</p><p class="sub">The organism will navigate toward waste</p>
@@ -332,6 +341,9 @@
   .bscan:hover { background: rgba(14,165,233,0.1); color: var(--accent); border-color: var(--accent); }
 
   .content { flex: 1; position: relative; overflow: hidden; }
+  /* Phase 2: WebGL2 Physarum overlay — absolutely positioned over the Treemap 2D canvas.
+     pointer-events: none preserves all mouse interaction with the terrain beneath. */
+  .sim-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; display: none; }
 
   .mid { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 12px; color: var(--text-secondary); }
   .sub { color: var(--text-muted); font-size: 12px; font-style: italic; }

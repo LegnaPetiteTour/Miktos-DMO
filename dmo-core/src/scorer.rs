@@ -38,15 +38,24 @@ pub fn score(node: &mut FileNode) {
         })
         .unwrap_or(0.5); // Unknown age: moderate assumption
 
-    // ── recency_score: exp(−days_since_access / 30) ──
-    // Recently accessed files are less likely waste. Exponential decay.
-    let recency_score = node
+    // ── recency_score: exp(−days_since_ref / 30) ──
+    // macOS APFS mounts with noatime by default: accessed_at usually mirrors
+    // modified_at, making raw atime unreliable as a recency signal.
+    // Heuristic: if accessed_at > modified_at the file was genuinely read after
+    // its last write — use atime. Otherwise fall back to mtime as a proxy.
+    // If neither is available, use 0.5 (neutral — no boost either way).
+    let ref_time = node
         .accessed_at
-        .map(|atime| {
-            let days = (now - atime).num_days().max(0) as f64;
+        .zip(node.modified_at)
+        .and_then(|(atime, mtime)| if atime > mtime { Some(atime) } else { None })
+        .or(node.modified_at)
+        .or(node.accessed_at);
+    let recency_score = ref_time
+        .map(|t| {
+            let days = (now - t).num_days().max(0) as f64;
             (-days / 30.0).exp()
         })
-        .unwrap_or(0.3); // Unknown access time: assume moderately stale
+        .unwrap_or(0.5); // neutral when no time metadata available at all
 
     // ── Composite score ──
     let waste_score = size_weight * age_weight * type_risk * (1.0 - recency_score);

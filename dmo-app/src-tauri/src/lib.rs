@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+// re-export for the DB call below
+use dmo_core::db::DmoDb;
+
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp(None)
@@ -43,6 +46,17 @@ pub mod commands {
 
         let (nodes, summary) = pipeline::run(&config).map_err(|e| e.to_string())?;
 
+        // Persist scan to SQLite history — best effort, never fails the scan
+        let scan_id: i64 = {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            let dmo_dir = Path::new(&home).join(".dmo");
+            let _ = std::fs::create_dir_all(&dmo_dir);
+            DmoDb::open(&dmo_dir.join("history.db"))
+                .and_then(|db| db.store_scan(&summary, &nodes))
+                .unwrap_or(-1)
+        };
+        log::info!("Scan persisted to SQLite with scan_id={}", scan_id);
+
         let tree = build_tree(&root, &nodes);
 
         log::info!(
@@ -63,6 +77,7 @@ pub mod commands {
             .collect();
 
         Ok(ScanResult {
+            scan_id,
             tree,
             summary: ScanSummaryDto {
                 root: path,
@@ -100,6 +115,8 @@ pub struct TreeNode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanResult {
+    /// Row ID in ~/.dmo/history.db — used by Phase 2 to query top waste candidates.
+    pub scan_id: i64,
     pub tree: TreeNode,
     pub summary: ScanSummaryDto,
 }

@@ -2,16 +2,20 @@
   import { onMount } from "svelte";
   import { hierarchy } from "d3-hierarchy";
   import { voronoiTreemap } from "d3-voronoi-treemap";
-  import type { TreeNode } from "./types";
+  import type { TreeNode, TerrainCell } from "./types";
 
   let {
     tree,
     onHover,
     onClick,
+    onCells,
   }: {
     tree: TreeNode;
     onHover: (node: TreeNode | null, x: number, y: number) => void;
     onClick: (node: TreeNode) => void;
+    /** Called after each layout computation with the screen-space terrain map.
+     *  Phase 2 uses this to build the Physarum chemoattractant texture. */
+    onCells?: (cells: TerrainCell[]) => void;
   } = $props();
 
   let canvas: HTMLCanvasElement | undefined = $state(undefined);
@@ -221,7 +225,17 @@
     if (!tree || width <= 0 || height <= 0 || !canvas) return;
     const v = ++layoutVersion;
     cells = computeLayout(tree, width, height);
-    if (v === layoutVersion) render();
+    if (v === layoutVersion) {
+      render();
+      // Emit terrain layout so the Phase 2 simulation can build its chemoattractant map
+      onCells?.(cells.map(c => ({
+        polygon: c.polygon,
+        path: c.node.path,
+        waste_score: c.node.waste_score,
+        centroid: c.centroid,
+        area: c.area,
+      })));
+    }
   }
 
   onMount(() => {
