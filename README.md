@@ -85,7 +85,7 @@ waste_score(f) = size_weight(f) × age_weight(f) × type_risk(f) × (1 - recency
 | `size_weight` | `log10(bytes / 1024) / 7.0`, clamped [0,1] | Files < 1 KB → 0.0 |
 | `age_weight` | `min(days_mtime / 365, 1.0)` | Unknown mtime → 0.5 (conservative) |
 | `type_risk` | Lookup from `WasteCategory` | 0.00 for protected, 0.95 for app/pkg caches |
-| `recency_score` | `e^(-days_atime / 30)` | Exponential decay; unknown atime → 0.3 |
+| `recency_score` | `e^(-days_ref / 30)` where `ref = atime if atime > mtime else mtime` | APFS `noatime` heuristic; unknown → 0.5 (neutral) |
 
 ### Waste Categories
 
@@ -111,21 +111,24 @@ Protected categories are never scored, never stored in the database, and are inv
 | --- | --- | --- |
 | **0** | CLI scanner — classify, score, SQLite, ranked report | ✅ Complete |
 | **1** | Tauri app + Voronoi treemap terrain visualization | ✅ Complete |
-| **2** | WebGL2/WebGPU Physarum particle organisms on the terrain | 🔜 Next |
+| **1→2** | SQLite wired, terrain cells bridged, overlay canvas ready | ✅ Complete |
+| **2** | WebGL2/WebGPU Physarum particle organisms on the terrain | 🔜 **In progress** |
 | **3** | Proposal system — organisms cluster → user approve/reject quarantine | Planned |
 | **4** | Learning loop — adapt weights from user accept/reject history | Planned |
 | **5** | ALife sandbox — evolving agent strategies, fitness-based selection | Research track |
 
 ### Phase 2 Preview — The Organisms
 
-Phase 2 adds a WebGL2 Physarum particle simulation rendered on top of the terrain. Based on Jones (2010):
+Phase 2 adds a WebGL2 Physarum particle simulation rendered on the `.sim-overlay` canvas (already present in the DOM, `pointer-events: none`, bound to `overlayCanvas`). Based on Jones (2010):
 
 - Each agent senses chemoattractant in three directions (forward-left, forward, forward-right)
 - Turns toward the highest concentration
 - Deposits trail at current position
-- Chemoattractant map is generated from `waste_score` data at each terrain cell
+- Chemoattractant map is a Float32 texture built from `TerrainCell.waste_score` values
 
-Dense organism clusters identify high-waste filesystem nodes → Phase 3 converts cluster position → Voronoi cell lookup → filesystem node → action proposal.
+The terrain geometry is already emitted as `TerrainCell[]` via the `onCells` callback after every Voronoi layout. The chemoattractant texture is built by rasterizing each cell polygon and filling it with the cell's `waste_score`. Dense organism clusters identify high-waste filesystem nodes → Phase 3 converts cluster position → Voronoi cell lookup → filesystem node → action proposal.
+
+See [`Documentation/DMO_Phase2_ImplementationPlan.md`](Documentation/DMO_Phase2_ImplementationPlan.md) for deliverables and implementation sequence.
 
 ---
 
@@ -192,13 +195,14 @@ First launch compiles all Tauri + Rust dependencies (~3–4 min). Subsequent lau
 
 ```text
 Miktos-DMO/
+├── CHANGELOG.md                  # Full change history, all commits
 ├── Cargo.toml                    # Workspace root
 ├── dmo-core/                     # Library crate — all intelligence
 │   └── src/
 │       ├── types.rs              # WasteCategory, FileNode, ScanConfig, ScanSummary
 │       ├── scanner.rs            # walkdir traversal, metadata extraction
 │       ├── classifier.rs         # 14-category rule engine (6 unit tests)
-│       ├── scorer.rs             # waste_score formula (4 unit tests)
+│       ├── scorer.rs             # waste_score formula; macOS atime heuristic
 │       ├── pipeline.rs           # scan → classify → score → sort orchestrator
 │       ├── db.rs                 # SQLite: snapshots, file_nodes, action_log
 │       └── lib.rs                # Public API
@@ -206,15 +210,17 @@ Miktos-DMO/
 │   └── src/main.rs               # clap CLI, text/JSON output
 ├── dmo-app/                      # Tauri desktop app
 │   ├── src/                      # Svelte 5 frontend
-│   │   ├── App.svelte            # Main app: controls, stats, navigation, tooltip
-│   │   ├── lib/Treemap.svelte    # Voronoi treemap Canvas2D renderer
-│   │   ├── lib/types.ts          # TypeScript interfaces matching Rust IPC structs
+│   │   ├── App.svelte            # Main app: controls, stats, navigation, tooltip, Phase 2 hooks
+│   │   ├── lib/Treemap.svelte    # Voronoi treemap Canvas2D renderer; emits TerrainCell[]
+│   │   ├── lib/types.ts          # TypeScript interfaces: TreeNode, ScanResult, TerrainCell
 │   │   └── app.css               # Global design tokens and styles
 │   └── src-tauri/src/
-│       ├── lib.rs                # IPC commands: scan_filesystem, get_home_dir
+│       ├── lib.rs                # IPC commands: scan_filesystem, get_home_dir; DmoDb wiring
 │       └── main.rs               # Tauri Builder entry point
 └── Documentation/
-    └── DMO_Phase2_Research_Architecture.md   # Full research dossier (52 sources)
+    ├── DMO_Phase2_Research_Architecture.md   # Full research dossier (52 verified sources)
+    ├── DMO_Phase1_Completion.md              # Phase 1 completion report + design decisions
+    └── DMO_Phase2_ImplementationPlan.md     # Phase 2 deliverables, shader plan, file structure
 ```
 
 ---
