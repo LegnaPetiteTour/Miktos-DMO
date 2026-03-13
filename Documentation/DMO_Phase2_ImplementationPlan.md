@@ -19,7 +19,7 @@ Add a WebGL2 Physarum polycephalum particle simulation rendered on top of the Vo
 Before writing a single line of Phase 2 code, the following infrastructure is ready:
 
 | Hook | Location | State |
-|---|---|---|
+| --- | --- | --- |
 | `overlayCanvas` | `dmo-app/src/App.svelte` | Bound `<canvas>` element, `pointer-events: none`, `display: none` |
 | `terrainCells: TerrainCell[]` | `dmo-app/src/App.svelte` | Updated after every Voronoi layout via `onCells` |
 | `TerrainCell` type | `dmo-app/src/lib/types.ts` | `{ polygon, path, waste_score, centroid, area }` |
@@ -33,9 +33,11 @@ Before writing a single line of Phase 2 code, the following infrastructure is re
 ## Deliverables
 
 ### D1 — Chemoattractant Texture
+
 Build a `Float32Array` of dimensions `width × height` from `terrainCells`.
 
 For each terrain cell:
+
 1. Rasterize the polygon into the texture (point-in-polygon or scanline fill)
 2. Write `cell.waste_score` as the chemoattractant concentration at every pixel inside
 
@@ -56,6 +58,7 @@ export function buildChemoattractantTexture(
 A self-contained WebGL2 simulation class using two ping-pong framebuffers (agent state and trail map) and four shader programs.
 
 **Implementation files:**
+
 - `dmo-app/src/lib/sim/PhysarumSim.ts` — simulation class
 - `dmo-app/src/lib/sim/shaders/agent.vert.glsl` — agent vertex shader
 - `dmo-app/src/lib/sim/shaders/agent.frag.glsl` — agent update fragment shader
@@ -63,15 +66,18 @@ A self-contained WebGL2 simulation class using two ping-pong framebuffers (agent
 - `dmo-app/src/lib/sim/shaders/render.frag.glsl` — render trail map to screen
 
 #### Agent State Encoding
+
 Each agent is a pixel in a `agentCount × 1` RGBA float texture:
+
 - `R` = x position (normalized [0, 1])
 - `G` = y position (normalized [0, 1])
 - `B` = heading angle (radians)
 - `A` = unused (reserved for Phase 3 agent ID)
 
 #### Jones (2010) Parameters (starting values, tunable)
+
 | Parameter | Symbol | Value |
-|---|---|---|
+| --- | --- | --- |
 | Sensor angle | SA | 45° |
 | Sensor offset | SO | 9 px |
 | Rotation angle | RA | 45° |
@@ -152,6 +158,7 @@ function stopSim() {
 ### D4 — Simulation Controls (optional, do after D1–D3 working)
 
 A collapsible parameter panel allowing real-time tweaking:
+
 - Agent count (500 / 1000 / 1500 / 2000)
 - Sensor angle (15°–90°)
 - Sensor offset (4–18 px)
@@ -162,7 +169,7 @@ A collapsible parameter panel allowing real-time tweaking:
 
 ## Implementation Sequence
 
-```
+```text
 Step 1 — Chemoattractant texture builder (pure TypeScript, no WebGL)
          Test: visualize texture as a grayscale image on a temp canvas
 
@@ -190,7 +197,7 @@ Step 8 — (optional) Parameter controls panel
 
 ## File Structure for Phase 2
 
-```
+```text
 dmo-app/src/lib/
 ├── sim/
 │   ├── PhysarumSim.ts              # Main simulation class
@@ -216,7 +223,7 @@ If WebGL2 is unavailable (checked via `canvas.getContext('webgl2') === null`), t
 ## Performance Targets
 
 | Metric | Target |
-|---|---|
+| --- | --- |
 | Agent count | 1,000–2,000 (empirically calibrated) |
 | Framerate | 60 fps on M-series Mac |
 | CPU overhead | < 1% (all work on GPU) |
@@ -238,9 +245,9 @@ If WebGL2 is unavailable (checked via `canvas.getContext('webgl2') === null`), t
 ## References
 
 | Concept | Source |
-|---|---|
-| Jones (2010) Physarum algorithm | https://pubmed.ncbi.nlm.nih.gov/20067403/ |
-| WebGL2 Physarum (zero deps, 1M+ agents) | https://maximilianklein.github.io/showcase/physarum/ |
-| Physarum WebGPU + TypeScript | https://github.com/SuboptimalEng/slime-sim-webgpu |
-| Physarum Rust + WebGPU | https://github.com/tom-strowger/physarum-rust |
+| --- | --- |
+| Jones (2010) Physarum algorithm | <https://pubmed.ncbi.nlm.nih.gov/20067403/> |
+| WebGL2 Physarum (zero deps, 1M+ agents) | <https://maximilianklein.github.io/showcase/physarum/> |
+| Physarum WebGPU + TypeScript | <https://github.com/SuboptimalEng/slime-sim-webgpu> |
+| Physarum Rust + WebGPU | <https://github.com/tom-strowger/physarum-rust> |
 | Full reference list (52 sources) | [`DMO_Phase2_Research_Architecture.md`](DMO_Phase2_Research_Architecture.md) |

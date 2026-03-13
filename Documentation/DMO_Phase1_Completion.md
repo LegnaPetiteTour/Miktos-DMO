@@ -21,7 +21,7 @@ This criterion is met. The app renders a live Voronoi treemap of any filesystem 
 ### 1. Rust Backend (`dmo-core`)
 
 | Module | Lines | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `scanner.rs` | ~140 | `walkdir` traversal; extracts path, size, mtime, atime; skips `.app` bundles, iCloud stubs, denylisted paths |
 | `classifier.rs` | ~200 | 14-category rule engine; protected categories checked first; pattern matching on path components + extensions |
 | `scorer.rs` | ~80 | `waste_score = size_weight × age_weight × type_risk × (1 − recency_score)`; all components bounded [0,1] |
@@ -43,6 +43,7 @@ Clap-based binary. Flags: `--path`, `--max-depth`, `--top`, `--db`, `--format {t
 #### Key components
 
 **`App.svelte`** — Main application shell:
+
 - Path input with scroll-to-end + history dropdown (last 10 paths)
 - 7 preset buttons (`~/Caches`, `~/Downloads`, `~/Documents`, `~/Desktop`, `~/Library`, Home, `/Applications`)
 - Native folder picker via `tauri-plugin-dialog`
@@ -54,6 +55,7 @@ Clap-based binary. Flags: `--path`, `--max-depth`, `--top`, `--db`, `--format {t
 - Address bar: displays hovered node path in real time
 
 **`Treemap.svelte`** — Voronoi terrain renderer:
+
 - `d3-voronoi-treemap` + `d3-hierarchy` for polygon layout
 - Canvas 2D for performance (80+ zones rendered per frame)
 - 5-stop color gradient: deep ocean (clean) → teal → amber → orange → crimson (critical waste)
@@ -64,6 +66,7 @@ Clap-based binary. Flags: `--path`, `--max-depth`, `--top`, `--db`, `--format {t
 - `onCells` callback (Phase 2 bridge) — emits terrain layout after every Voronoi computation
 
 **`lib.rs`** — Tauri command implementations:
+
 - `scan_filesystem(path, max_depth)` → pipeline → tree builder → `ScanResult`
 - `get_home_dir()` → `$HOME`
 - Recursive `group_into_tree()` aggregation (size, file count, dominant category, avg score)
@@ -75,7 +78,7 @@ Clap-based binary. Flags: `--path`, `--max-depth`, `--top`, `--db`, `--format {t
 Before Phase 2 began, the following architectural hooks were added to avoid mid-simulation refactoring:
 
 | Hook | Location | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `TerrainCell` type | `types.ts` | Unified terrain layout interface: `{ polygon, path, waste_score, centroid, area }` |
 | `onCells` prop | `Treemap.svelte` | Fires after every Voronoi layout with `TerrainCell[]` |
 | `terrainCells` state | `App.svelte` | Holds current terrain layout; fed to simulation |
@@ -87,18 +90,23 @@ Before Phase 2 began, the following architectural hooks were added to avoid mid-
 ## Key Design Decisions Made During Phase 1
 
 ### Voronoi layout is flat, not recursive
+
 The Voronoi computation is run once per view level against the direct children of the current node — not recursively against the full subtree. This keeps the layout stable and fast at any drill depth without re-running the iterative optimizer on thousands of nodes.
 
 ### Canvas 2D, not SVG
+
 All rendering is on an HTML `<canvas>` element using the Canvas 2D API. This allows clean separation from the Phase 2 WebGL2 overlay (which uses a second canvas element) and avoids SVG performance degradation at 80+ zones.
 
 ### Tree builder uses a flat file list, not a tree walk
+
 The Rust scanner returns a flat `Vec<FileNode>`. The tree builder in Rust (`group_into_tree`) groups files by first path component recursively. This is simpler than tracking directory entries during the walk and produces correct aggregates at each level.
 
 ### Denylist root exclusion
+
 The `default_denylist()` was originally defined for subdirectory filtering, not for root paths. Presets that set the scan root to a denylisted path (e.g. `/Applications`, `~/Documents`) got zero results. Fixed by filtering the root from the denylist before scan: this is the correct behavior — the user explicitly chose this root, so it is by definition not a path to skip.
 
 ### macOS `atime` heuristic
+
 APFS with `noatime` makes `metadata.accessed()` unreliable as a standalone recency signal. The scorer now uses `atime` only when `atime > mtime` (confirming a genuine post-write read); otherwise it falls back to `mtime` as a proxy. This is a deliberate approximation, not a full solution — a future improvement could use `birth_time` or extended attributes.
 
 ---
@@ -108,7 +116,7 @@ APFS with `noatime` makes `metadata.accessed()` unreliable as a standalone recen
 Test machine: MacBook Pro (M-series), APFS, macOS 15.x
 
 | Scan target | Files | Total size | Waste found | Time | False positives |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | `~/Library/Caches` (depth 4) | ~9,000 | ~12 GB | ~2.5 GB | <1 s | 0 |
 | `~/Library` (depth 5) | ~15,000 | ~15 GB | ~4.3 GB | ~2 s | 0 |
 | `~/Library` (depth 6) | 202,034 | 487 GB | **180 GB** | 61.9 s | 0 |
@@ -131,7 +139,7 @@ Permission-denied paths are logged as warnings and skipped cleanly. No crash on 
 ## Known Limitations Entering Phase 2
 
 | Limitation | Severity | Plan |
-|---|---|---|
+| --- | --- | --- |
 | `atime` reliability on APFS | Medium | Heuristic mitigated; could improve with `birth_time` or xattr |
 | Scan is blocking (synchronous on Rust side, async on frontend) | Low | Fine for Phase 2; Phase 3 will want progress events |
 | Voronoi layout can take 1–3 s on first render for large scans | Low | Acceptable; layout runs in browser thread, doesn't block backend |
@@ -141,7 +149,7 @@ Permission-denied paths are logged as warnings and skipped cleanly. No crash on 
 
 ## Files Changed During Phase 1 Cycle (2026-03-11 → 2026-03-12)
 
-```
+```text
 dmo-app/src/App.svelte                         main UI + navigation + Phase 2 hooks
 dmo-app/src/lib/Treemap.svelte                 Voronoi renderer + onCells bridge
 dmo-app/src/lib/types.ts                       TypeScript interfaces + TerrainCell

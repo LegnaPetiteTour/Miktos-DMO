@@ -1,5 +1,7 @@
 # Changelog
 
+<!-- markdownlint-disable MD024 -->
+
 All notable changes to Miktos DMO are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
@@ -12,6 +14,7 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/) a
 Work begins after commit `7d0a323`. See [`Documentation/DMO_Phase2_ImplementationPlan.md`](Documentation/DMO_Phase2_ImplementationPlan.md) for the full implementation plan.
 
 ### Planned
+
 - WebGL2 Physarum particle simulation rendered on the `.sim-overlay` canvas
 - Chemoattractant texture built from `TerrainCell.waste_score` map (bridge already wired)
 - Jones (2010) agent parameters: `SA=45°`, `SO=9px`, `RA=45°`, `stepSize=1`
@@ -23,6 +26,7 @@ Work begins after commit `7d0a323`. See [`Documentation/DMO_Phase2_Implementatio
 ## [0.2.1] — 2026-03-12 — Phase 1 Polish + Pre-Phase-2 Architecture
 
 ### Added — `7d0a323`
+
 - **SQLite persistence wired into scan command** (`dmo-app/src-tauri/src/lib.rs`)
   - Every scan now persisted to `~/.dmo/history.db` via `DmoDb`
   - `scan_id` (i64 row ID) returned in every `ScanResult` IPC response
@@ -41,6 +45,7 @@ Work begins after commit `7d0a323`. See [`Documentation/DMO_Phase2_Implementatio
   - `overlayCanvas` ref bound and accessible in App scope
 
 ### Fixed — `7d0a323`
+
 - **macOS `atime` unreliability in scorer** (`dmo-core/src/scorer.rs`)
   - APFS `noatime` mounts cause `metadata.accessed()` to mirror `mtime` or be stale
   - New heuristic: treat `atime` as genuine only when `atime > mtime`; otherwise fall back to `mtime` as a recency proxy
@@ -48,17 +53,20 @@ Work begins after commit `7d0a323`. See [`Documentation/DMO_Phase2_Implementatio
   - Waste scoring measurably more accurate on APFS volumes
 
 ### Fixed — `7e2b7a2`
+
 - **Scanner denylist blocked its own configured root**
   - Presets and folder picker for `/Applications`, `~/Documents`, `~/Desktop` returned zero results because the path was in `default_denylist()`
   - Fix: `.filter(|p| p != &root)` removes the root from the denylist before constructing `ScanConfig`
 
 ### Fixed — `128f4e3`
+
 - **Presets and folder picker silently did not scan**
   - `setPreset()` only set `scanPath`/`maxDepth`, never called `startScan()`
   - `pickFolder()` set path from dialog, never scanned
   - Fix: both functions now `await startScan()` at the end
 
 ### Added — `3872e53`
+
 - **Native folder picker** via `tauri-plugin-dialog`
   - Added npm package, Cargo dep, `"dialog:allow-open"` capability permission
   - `⋯` button next to path input opens macOS native "Choose Folder" sheet
@@ -69,24 +77,29 @@ Work begins after commit `7d0a323`. See [`Documentation/DMO_Phase2_Implementatio
   - Expanded from the original 3 presets; all auto-scan on click
 
 ### Fixed — `1817a35`
+
 - **Path input clipped long paths** — only showed first ~22 chars
   - `bind:this={pathInputEl}` + reactive `$effect` scrolls input `scrollLeft` to `scrollWidth` on every path change (when unfocused)
   - `focus` handler calls `select()` so user can replace the path immediately
 
 ### Fixed — `12bf2b5`
+
 - **Path display strip** replaced two-line overlay approach with `word-break: break-all; white-space: normal` single element — full path always visible without ellipsis
 
 ### Added — `be98039`
+
 - Address bar hover preview: hovered node path replaces current path in strip in real time
 - Depth selector extended to 1–8 levels
 - Path history dropdown: last 10 scanned paths, deduplicated, most recent first
 - Category panel redesigned: score-colored bar charts, legend, context line
 
 ### Fixed — `d707cbf` `1a3a586`
+
 - Voronoi parameters corrected: `minWeightRatio(0.01)`, `convergenceRatio(0.01)`, `maxIterationCount(150)`
 - Replaced async Voronoi recompute with synchronous debounce — eliminated "No zones to display" flicker on resize
 
 ### Fixed — `a3d792e` `9aef3d2`
+
 - Zero TypeScript errors baseline: resolved all strict-mode errors, Svelte 5 rune warnings, and Vite config issues
 
 ---
@@ -94,6 +107,7 @@ Work begins after commit `7d0a323`. See [`Documentation/DMO_Phase2_Implementatio
 ## [0.2.0] — 2026-03-11 — Phase 1: Terrain Visualization
 
 ### Added
+
 - **Tauri 2.x desktop app** (`dmo-app`) with Svelte 5 frontend
 - **Voronoi treemap renderer** using `d3-voronoi-treemap@1.1.1` and Canvas2D
   - 5-stop perceptual color gradient (deep ocean → teal → amber → orange → red)
@@ -112,6 +126,7 @@ Work begins after commit `7d0a323`. See [`Documentation/DMO_Phase2_Implementatio
 - **`TreeNode` / `ScanResult`** TypeScript interfaces matching Rust IPC structs
 
 ### Fixed
+
 - `@sveltejs/vite-plugin-svelte@4` incompatibility with Vite 6 → bumped to `^5.0.0`
 - `#[tauri::command]` / `#[macro_export]` collision when commands defined at crate root → moved to `pub mod commands {}`
 - Missing icon files causing `tauri::generate_context!()` panic → generated RGBA PNG placeholders
@@ -122,6 +137,7 @@ Work begins after commit `7d0a323`. See [`Documentation/DMO_Phase2_Implementatio
 ## [0.1.0] — 2026 — Phase 0: CLI Foundation
 
 ### Added
+
 - **`dmo-core`** library crate with the complete scan/classify/score pipeline
   - `scanner.rs`: `walkdir`-based filesystem traversal; extracts path, size, mtime, atime; skips `.app` bundles, iCloud placeholders, denylisted paths
   - `classifier.rs`: two-phase first-match rule engine — protected categories checked first, waste categories second; all rules case-insensitive
@@ -137,6 +153,7 @@ Work begins after commit `7d0a323`. See [`Documentation/DMO_Phase2_Implementatio
 - **`.gitignore`**: comprehensive rules for Rust, Tauri, Node.js, macOS, editors, secrets, SQLite databases
 
 ### Validated
+
 - `~/Library/Caches` (12.14 GB, 4,973 candidates, 776 ms): zero false positives
 - `~/Library` (487.47 GB, 88,703 candidates, 61.9 s): zero false positives
 - Top-ranked waste correctly identifies: AR cache blobs (0.65), SiriTTS binaries (0.57), VS Code/Cursor caches
