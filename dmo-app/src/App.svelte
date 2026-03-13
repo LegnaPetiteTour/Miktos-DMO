@@ -3,6 +3,8 @@
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import Treemap from "./lib/Treemap.svelte";
   import type { ScanResult, TreeNode, TerrainCell } from "./lib/types";
+  import { PhysarumSim } from "./lib/sim/PhysarumSim";
+  import { buildChemoattractantTexture } from "./lib/sim/chemoattractant";
 
   let scanResult: ScanResult | null = $state(null);
   let scanning: boolean = $state(false);
@@ -23,6 +25,11 @@
   // Overlay canvas for the WebGL2 Physarum particle simulation (Phase 2).
   // Sits above the Treemap 2D canvas; pointer-events disabled so map interaction still works.
   let overlayCanvas: HTMLCanvasElement | null = $state(null);
+  // Phase 2: simulation state (not $state — class instance doesn't need deep tracking)
+  let simRunning: boolean = $state(false);
+  let simError: string | null = $state(null);
+  let sim: PhysarumSim | null = null;
+  let animFrameId: number | null = null;
 
   $effect(() => {
     const _ = scanPath; // track path changes
@@ -118,6 +125,61 @@
     } catch {}
     await startScan();
   }
+
+  // ─── Phase 2: Physarum simulation ───────────────────────────────────────
+
+  function simLoop() {
+    if (!simRunning || !sim) return;
+    sim.step();
+    animFrameId = requestAnimationFrame(simLoop);
+  }
+
+  async function startSim() {
+    if (!overlayCanvas || terrainCells.length === 0) return;
+    simError = null;
+    try {
+      // Match overlay canvas dimensions to the content container
+      const rect = overlayCanvas.getBoundingClientRect();
+      overlayCanvas.width  = Math.max(1, Math.floor(rect.width));
+      overlayCanvas.height = Math.max(1, Math.floor(rect.height));
+      overlayCanvas.style.display = "block";
+
+      sim = new PhysarumSim(overlayCanvas);
+      sim.updateChemoMap(
+        buildChemoattractantTexture(terrainCells, overlayCanvas.width, overlayCanvas.height),
+      );
+
+      simRunning = true;
+      simLoop();
+    } catch (e: unknown) {
+      simError = e instanceof Error ? e.message : String(e);
+      if (overlayCanvas) overlayCanvas.style.display = "none";
+    }
+  }
+
+  function stopSim() {
+    simRunning = false;
+    if (animFrameId !== null) { cancelAnimationFrame(animFrameId); animFrameId = null; }
+    if (sim) { sim.dispose(); sim = null; }
+    if (overlayCanvas) {
+      overlayCanvas.style.display = "none";
+      const gl = overlayCanvas.getContext("webgl2");
+      if (gl) gl.clearColor(0, 0, 0, 0);
+    }
+    simError = null;
+  }
+
+  // When terrain cells update while simulation is running, refresh the chemo map
+  $effect(() => {
+    const cells = terrainCells; // reactive dependency
+    if (simRunning && sim && cells.length > 0 && overlayCanvas) {
+      const w = overlayCanvas.width;
+      const h = overlayCanvas.height;
+      if (w > 0 && h > 0) {
+        sim.updateChemoMap(buildChemoattractantTexture(cells, w, h));
+      }
+    }
+  });
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -135,6 +197,14 @@
         <div class="st waste"><span class="sl">Waste%</span><span class="sv">{wastePercent()}%</span></div>
         <div class="st"><span class="sl">Scan Time</span><span class="sv" title="Time the Rust backend took to walk the filesystem and build the tree">{scanResult.summary.scan_time_ms.toLocaleString()}ms</span></div>
       </div>
+      <button
+        class="sim-toggle"
+        class:sim-on={simRunning}
+        onclick={() => simRunning ? stopSim() : startSim()}
+        title={simRunning ? "Stop Physarum simulation" : "Start Physarum organism simulation"}
+        disabled={terrainCells.length === 0}>
+        {simRunning ? "⊗ Organism" : "⚛ Organism"}
+      </button>
     {/if}
   </header>
 
@@ -212,6 +282,9 @@
         onCells={cells => { terrainCells = cells; }} />
       <!-- Phase 2: WebGL2 Physarum overlay — bound but invisible until simulation starts -->
       <canvas bind:this={overlayCanvas} class="sim-overlay"></canvas>
+      {#if simError}
+        <div class="sim-err">WebGL2 unavailable: {simError}</div>
+      {/if}
     {:else}
       <div class="mid">
         <p>Select a path and press Scan</p><p class="sub">The organism will navigate toward waste</p>
@@ -325,6 +398,11 @@
   .cbtn { padding: 7px 12px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text-secondary); font-size: 16px; cursor: pointer; line-height: 1; }
   .cbtn:hover, .copen { border-color: var(--accent-dim); color: var(--accent); background: rgba(14,165,233,0.08); }
 
+  .sim-toggle { padding: 7px 14px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text-muted); font-size: 11px; font-weight: 600; font-family: var(--font-mono); cursor: pointer; letter-spacing: 0.4px; white-space: nowrap; }
+  .sim-toggle:hover:not(:disabled) { border-color: rgba(100,220,100,0.4); color: rgba(100,220,100,0.9); background: rgba(100,220,100,0.06); }
+  .sim-toggle.sim-on { border-color: rgba(100,220,100,0.5); color: rgba(120,240,120,1.0); background: rgba(100,220,100,0.10); }
+  .sim-toggle:disabled { opacity: 0.35; cursor: not-allowed; }
+
   .presets { display: flex; gap: 5px; }
   .pr { padding: 3px 9px; background: transparent; border: 1px solid var(--border); border-radius: 4px; color: var(--text-muted); font-size: 10px; font-family: var(--font-mono); cursor: pointer; }
   .pr:hover { border-color: var(--accent-dim); color: var(--text-primary); }
@@ -344,6 +422,7 @@
   /* Phase 2: WebGL2 Physarum overlay — absolutely positioned over the Treemap 2D canvas.
      pointer-events: none preserves all mouse interaction with the terrain beneath. */
   .sim-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; display: none; }
+  .sim-err { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.35); color: #ef4444; font-size: 11px; padding: 4px 12px; border-radius: 6px; pointer-events: none; max-width: 90%; text-align: center; }
 
   .mid { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 12px; color: var(--text-secondary); }
   .sub { color: var(--text-muted); font-size: 12px; font-style: italic; }
